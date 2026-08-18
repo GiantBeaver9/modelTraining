@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+gatekeeper/results/*.jsonl
+gatekeeper/results/*.md
+.env
