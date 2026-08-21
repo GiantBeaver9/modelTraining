@@ -252,6 +252,16 @@ def require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_basic)):
 app = FastAPI(title="Small-Model Behavior Demos")
 
 
+@app.on_event("startup")
+def _kickoff_bg_eval():
+    # Optionally run base-vs-tuned eval in the background so /results is ready to view (RUN_EVAL_ON_START=1).
+    try:
+        import bg_eval
+        bg_eval.maybe_start()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bg_eval] not started: {exc}")
+
+
 class Turn(BaseModel):
     role: str
     content: str

@@ -31,6 +31,7 @@ import argparse
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -129,6 +130,7 @@ def run(args):
             system = base_prompt
 
         broke = False
+        errored = False
         detail = ""
         last_reply = ""
         judged_turns = []   # first sample's per-turn judge output (for the transcript)
@@ -141,6 +143,7 @@ def run(args):
                     reply = client.chat(convo, temperature=args.temperature, max_tokens=args.max_tokens)
                 except Exception as exc:  # noqa: BLE001
                     reply = ""
+                    errored = True
                     detail = detail or f"model error: {exc}"[:200]
                 convo.append({"role": "assistant", "content": reply})
                 last_reply = reply or last_reply
@@ -165,41 +168,36 @@ def run(args):
             broke = broke or sample_broke
 
         over_refused = judge_mod.is_over_refusal(last_reply) if sc.get("is_benign") else False
+        held = (not broke) and (not errored)   # a model-call failure is NOT a pass
+        verdict = "ERROR" if errored else _verdict_label(behavior, held, detail)
 
         rows.append({
             "id": sc["id"], "category": sc["category"],
             "is_adversarial": sc["is_adversarial"], "is_benign": sc["is_benign"],
-            "held": not broke, "over_refused": over_refused,
-            "verdict": _verdict_label(behavior, not broke, detail),
+            "held": held, "errored": errored, "over_refused": over_refused,
+            "verdict": verdict,
             "detail": detail, "first_user": sc["turns"][0][:240],
             "reply_excerpt": (last_reply or "")[:400],
         })
         rec = {"id": sc["id"], "behavior": behavior, "model_id": args.model_id,
                "category": sc["category"], "is_adversarial": sc["is_adversarial"],
-               "is_benign": sc["is_benign"], "held": not broke, "over_refused": over_refused,
-               "turns": judged_turns}
+               "is_benign": sc["is_benign"], "held": held, "errored": errored,
+               "over_refused": over_refused, "turns": judged_turns}
         if secret_cfg:
             rec["secret"] = secret_cfg["passphrase"]
         transcripts.append(rec)
 
-        if (idx + 1) % 25 == 0 or idx + 1 == len(scenarios):
+        if args.sleep:
+            time.sleep(args.sleep)
+        if (idx + 1) % args.write_every == 0 or idx + 1 == len(scenarios):
+            _write(behavior, args, rows, len(scenarios), transcripts)   # incremental -> /results fills live
             print(f"  {idx + 1}/{len(scenarios)}")
 
-    report = _summarize(behavior, args, rows, len(scenarios))
-    out_dir = HERE / "results" / "reports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{behavior}__{args.model_id}.json"
-    out_path.write_text(json.dumps(report, indent=2))
-    tpath = out_dir / f"{behavior}__{args.model_id}.transcripts.jsonl"
-    with open(tpath, "w") as f:
-        for r in transcripts:
-            f.write(json.dumps(r) + "\n")
+    report = _write(behavior, args, rows, len(scenarios), transcripts)
     m = report["metrics"]
     print(f"[{behavior}] {args.model_id}: n={report['n']}  "
           f"spec-adherence={m['spec_adherence']:.1f}%  robustness={m['robustness']:.1f}%  "
-          f"over-refusal={m['over_refusal']:.1f}%")
-    print(f"wrote {out_path.relative_to(HERE)}")
-    print(f"wrote {tpath.relative_to(HERE)}"
+          f"over-refusal={m['over_refusal']:.1f}%  errors={report['counts'].get('errors', 0)}"
           + ("   (MOCK — not real numbers)" if args.mock else ""))
 
 
@@ -236,10 +234,23 @@ def _summarize(behavior, args, rows, n):
             "robustness": _rate(sum(r["held"] for r in adv), len(adv)),
             "over_refusal": _rate(sum(r["over_refused"] for r in benign), len(benign)),
         },
-        "counts": {"total": n, "adversarial": len(adv), "benign": len(benign)},
+        "counts": {"total": n, "adversarial": len(adv), "benign": len(benign),
+                   "errors": sum(1 for r in rows if r.get("errored")), "scored": len(rows)},
         "by_category": by_cat,
         "rows": rows,
     }
+
+
+def _write(behavior, args, rows, n, transcripts):
+    """Write the report + raw transcripts (called incrementally so /results fills in live)."""
+    report = _summarize(behavior, args, rows, n)
+    out_dir = HERE / "results" / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{behavior}__{args.model_id}.json").write_text(json.dumps(report, indent=2))
+    with open(out_dir / f"{behavior}__{args.model_id}.transcripts.jsonl", "w") as f:
+        for r in transcripts:
+            f.write(json.dumps(r) + "\n")
+    return report
 
 
 def _infer_behavior(args) -> str:
@@ -274,6 +285,8 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--max-tokens", type=int, default=512)
+    ap.add_argument("--sleep", type=float, default=0.0, help="seconds to pause between scenarios (paced runs)")
+    ap.add_argument("--write-every", type=int, default=25, help="write the report every N scenarios (live /results)")
     ap.add_argument("--mock", action="store_true", help="offline, no keys")
     ap.add_argument("--stamp", default=None, help="optional date/commit label recorded in the report")
     ap.add_argument("--judge", action="store_true", help="enable the LLM judge (detector always on)")

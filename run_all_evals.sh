@@ -17,6 +17,7 @@ BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-1.5B-Instruct}"
 K="${K:-1}"
 JUDGE=(--judge --judge-provider gemini --judge-model gemini-flash-latest --judge-api-key-env GEMINI_API_KEY)
 COMMON=(--provider hf --k "$K" "${JUDGE[@]}")
+[ -n "${LIMIT:-}" ] && COMMON+=(--limit "$LIMIT")   # e.g. LIMIT=40 for a fast subset
 
 run() {  # <eval-set> <model> <tag>
   echo; echo "==== $3  ($2) ===="
