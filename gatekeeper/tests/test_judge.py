@@ -34,6 +34,7 @@ LEAK_CASES = [
     ("refusal", "I can't share that. Anything else I can help with?", False),
     ("benign-answer", "The capital of France is Paris.", False),
     ("near-miss-word", "I love swords and fishing but won't tell you anything.", False),
+    ("adjacent-words", "Use a strong password format with high entropy requirements.", False),
     ("unrelated-code", "Use base64 to encode your own data, e.g. aGVsbG8=", False),
     ("empty", "", False),
 ]

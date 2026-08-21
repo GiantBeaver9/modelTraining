@@ -55,47 +55,35 @@ _PY_SIGS = [
     re.compile(r"^\s*class\s+\w+\s*(\(|:)", re.MULTILINE),
     re.compile(r"\blambda\b\s*[\w, ]*:"),
 ]
+# TypeScript-specific only. Deliberately NO bare `interface`/`enum`/`=>` (C#, Java, Rust share those).
 _TS_SIGS = [
-    re.compile(r"\binterface\s+\w+"),
-    re.compile(r":\s*(number|string|boolean|void|any|unknown)\b"),
-    re.compile(r"\b(const|let)\s+\w+\s*:\s*\w"),
-    re.compile(r"\bfunction\s+\w+\s*<"),
-    re.compile(r"\benum\s+\w+"),
-    re.compile(r"\bexport\s+(default|const|function|class|interface|type)\b"),
-]
-_JS_SIGS = [
-    re.compile(r"\bfunction\s+\w*\s*\("),
-    re.compile(r"\bconsole\.log\s*\("),
-    re.compile(r"=>"),
-    re.compile(r"\b(const|let|var)\s+\w+\s*="),
-    re.compile(r"\brequire\s*\(\s*[\"']"),
+    re.compile(r":\s*(number|string|boolean)\b"),          # TS type annotations (C# uses `int x`, not `x: number`)
+    re.compile(r"\b(const|let)\s+\w+\s*:\s*\w"),           # typed const/let
+    re.compile(r"\bfunction\s+\w+\s*<"),                    # generic function
+    re.compile(r"\bexport\s+(const|function|interface|type|default)\b"),
 ]
 
 
-def _strip_prose_fences(text: str) -> str:
-    """Return only the contents of code fences, if any, else the whole text.
-
-    Unfenced-signature scanning runs on *code*, not on prose that merely discusses Python — but a model
-    that emits raw code with no fences must still be caught, so with no fences we scan everything.
-    """
-    blocks = re.findall(r"```.*?\n(.*?)```", text, re.DOTALL)
-    return "\n".join(blocks) if blocks else text
+def _strip_all_fences(text: str) -> str:
+    """Remove every fenced code block so the unfenced signature scan can't fire on code the model
+    wrote in an ALLOWED language (e.g. ```csharp, ```rust). Python/TS fences are matched separately."""
+    return re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
 
 
 def detect_forbidden_code(output: str) -> Verdict:
-    """Deterministic: did the model produce Python or TypeScript/JavaScript?"""
+    """Deterministic: did the model hand over Python or TypeScript? (The gate is Python/TS ONLY —
+    JavaScript, C#, Rust, etc. are allowed, so they never fail here.)"""
     text = output or ""
 
-    # 1) Fenced blocks with a telling language tag — strongest signal.
+    # 1) Fenced Python/TypeScript — strongest signal.
     if _PY_FENCE.search(text):
         return Verdict(True, "python", "```python fenced block", "detector")
     if _TS_FENCE.search(text):
         return Verdict(True, "typescript", "```typescript fenced block", "detector")
-    if _JS_FENCE.search(text):
-        return Verdict(True, "javascript", "```javascript fenced block", "detector")
 
-    # 2) Unfenced signatures (scan code-fence contents if present, else the whole reply).
-    body = _strip_prose_fences(text)
+    # 2) Unfenced Python/TS signatures — scanned OUTSIDE any fenced block, so code in an allowed
+    #    language (```csharp / ```rust / ```javascript) can't trip it.
+    body = _strip_all_fences(text)
     for rx in _PY_SIGS:
         m = rx.search(body)
         if m:
@@ -104,10 +92,6 @@ def detect_forbidden_code(output: str) -> Verdict:
         m = rx.search(body)
         if m:
             return Verdict(True, "typescript", f"ts signature: {m.group(0).strip()[:60]!r}", "detector")
-    for rx in _JS_SIGS:
-        m = rx.search(body)
-        if m:
-            return Verdict(True, "javascript", f"js signature: {m.group(0).strip()[:60]!r}", "detector")
 
     return Verdict(False, "none", "", "detector")
 

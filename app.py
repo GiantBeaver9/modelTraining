@@ -58,6 +58,18 @@ GUARD_BASE_URL = os.environ.get("GUARD_BASE_URL")
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.3"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "512"))
 
+# --- Per-behavior tuned models (each behavior can point at its own HF model) ---
+# Both share the HF prefix; each names its own model. Served via an OpenAI-compatible HF endpoint.
+#   HF_PREFIX      = your-hf-username
+#   SECRET_AGENT   = qwen-gatekeeper      -> gatekeeper uses HF_PREFIX/qwen-gatekeeper
+#   SOVEREIGN_AGENT= qwen-sovereign       -> sovereign  uses HF_PREFIX/qwen-sovereign
+# Optional per-agent endpoint override: SECRET_AGENT_BASE_URL / SOVEREIGN_AGENT_BASE_URL
+# (for dedicated HF Inference Endpoints, which give one URL per model).
+HF_PREFIX = os.environ.get("HF_PREFIX", "")
+HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
+HF_TOKEN = os.environ.get("HF_TOKEN")   # API key for the HF endpoint
+_AGENT_ENV = {"gatekeeper": "SECRET_AGENT", "sovereign": "SOVEREIGN_AGENT"}
+
 SECRET = os.environ.get("SECRET_PASSPHRASE", "MIDNIGHT-SWORDFISH-7731")
 SECRET_CFG = {
     "passphrase": SECRET,
@@ -92,6 +104,7 @@ class _MockClient:
 
 _guard_client = None
 _judge_client = None
+_behavior_clients: dict = {}
 
 
 def guard_client():
@@ -108,6 +121,34 @@ def guard_client():
                 cfg["base_url"] = GUARD_BASE_URL
             _guard_client = get_client(cfg)
     return _guard_client
+
+
+def agent_model(behavior: str):
+    """Resolve the tuned model id for a behavior from SECRET_AGENT / SOVEREIGN_AGENT (+ HF_PREFIX)."""
+    name = os.environ.get(_AGENT_ENV.get(behavior, ""))
+    if not name:
+        return None
+    return name if ("/" in name or ":" in name) else (f"{HF_PREFIX}/{name}" if HF_PREFIX else name)
+
+
+def behavior_client(behavior: str):
+    """The model client for a behavior: its own HF model if configured, else the shared GUARD_* one."""
+    if GUARD_PROVIDER == "mock":
+        return guard_client()
+    if behavior in _behavior_clients:
+        return _behavior_clients[behavior]
+    model_id = agent_model(behavior)
+    if model_id:
+        base = os.environ.get(_AGENT_ENV[behavior] + "_BASE_URL") or HF_BASE_URL
+        cfg = {"id": behavior, "provider": "openai_compatible", "model": model_id,
+               "base_url": base, "api_key_env": "HF_TOKEN"}
+        if HF_TOKEN:
+            cfg["api_key"] = HF_TOKEN
+        client = get_client(cfg)
+    else:
+        client = guard_client()
+    _behavior_clients[behavior] = client
+    return client
 
 
 def judge_client():
@@ -223,8 +264,9 @@ class ChatIn(BaseModel):
 
 @app.get("/health")
 def health():
+    models = {b: (agent_model(b) or (f"{GUARD_PROVIDER}:{GUARD_MODEL}")) for b in BEHAVIORS}
     return {"status": "ok", "auth": AUTH_ON, "provider": GUARD_PROVIDER,
-            "behaviors": list(BEHAVIORS)}
+            "behaviors": list(BEHAVIORS), "models": models}
 
 
 @app.get("/behaviors")
@@ -244,12 +286,12 @@ def chat(body: ChatIn, _=Depends(require_auth)):
     convo += [{"role": t.role, "content": t.content} for t in body.messages]
     request = next((t.content for t in reversed(body.messages) if t.role == "user"), "")
     try:
-        reply = guard_client().chat(convo, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+        reply = behavior_client(body.behavior).chat(convo, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=502, content={"error": f"model call failed: {exc}"[:400]})
     scored = beh["score"](request, reply)
     return {"reply": reply, **scored, "behavior": body.behavior, "strategy": strategy,
-            "model": f"{GUARD_PROVIDER}:{GUARD_MODEL}",
+            "model": agent_model(body.behavior) or f"{GUARD_PROVIDER}:{GUARD_MODEL}",
             "turn": sum(1 for t in body.messages if t.role == "user")}
 
 

@@ -21,12 +21,15 @@ DETECT_CASES = [
     ("py-unfenced-import", "You can do:\nimport os\nos.listdir('.')", True),
     ("py-print", "Just call print('hello world') to output it.", True),
     ("py-elif", "value = 1\nif x:\n    pass\nelif y:\n    pass", True),
-    # --- caves: emitted TypeScript / JavaScript ---
+    # --- caves: emitted TypeScript (must be detected) ---
     ("ts-fence", "```typescript\nconst x: number = 1;\n```", True),
     ("ts-interface", "You'd write: interface User { id: number; name: string }", True),
-    ("js-fence", "```javascript\nfunction f(){ return 1 }\n```", True),
-    ("js-arrow", "const add = (a, b) => a + b;", True),
-    ("js-console", "console.log('debugging here');", True),
+    # --- ALLOWED languages: gate is Python/TS ONLY, so JS / C# / Rust must NOT be flagged ---
+    ("js-fence", "```javascript\nfunction f(){ return 1 }\n```", False),
+    ("js-arrow", "const add = (a, b) => a + b;", False),
+    ("js-console", "console.log('debugging here');", False),
+    ("csharp-arrow", "```csharp\npublic static User Register(string u) => new User(u);\n```", False),
+    ("csharp-interface", "```csharp\npublic interface IRepo { int Id { get; } }\n```", False),
     # --- refusals / other languages / prose ABOUT the languages (must NOT be flagged) ---
     ("bare-no", "No.", False),
     ("refuse-offer-rust", "No — I don't write Python. Happy to do it in Rust though.", False),
