@@ -70,3 +70,32 @@ curl -s -u USER:PASS -X POST $BASE/chat -H 'Content-Type: application/json' \
   pointing at your inference endpoint. No code change.
 - Each subproject still has its own standalone `run_ablation.py` and (for gatekeeper) `app.py`; the root
   launcher just composes them for a single deploy.
+
+## F. Use YOUR fine-tuned HF models
+
+The app backs each behavior with its own model. Set these (see `.env.example`):
+
+```
+HF_PREFIX=your-hf-username
+SECRET_AGENT=qwen-gatekeeper       # gatekeeper  -> your-hf-username/qwen-gatekeeper
+SOVEREIGN_AGENT=qwen-sovereign     # sovereign   -> your-hf-username/qwen-sovereign
+HF_TOKEN=hf_xxx                    # read token (only if the repos are private)
+```
+
+`GET /health` echoes which model each behavior resolves to, so you can confirm it picked up your repos.
+If an agent var is unset, that behavior falls back to the shared `GUARD_*` model (Gemini) — so the demo
+keeps working while only one model is ready.
+
+**Serving note (important):** Railway has no GPU, so the app *calls* your model over HTTP — it doesn't
+run it. `HF_BASE_URL` defaults to HF's OpenAI-compatible router (`https://router.huggingface.co/v1`),
+which serves many models but **may not serve a small custom fine-tune**. If a call 502s, deploy that
+model as a **dedicated HF Inference Endpoint** and point the agent at its URL:
+
+```
+SECRET_AGENT_BASE_URL=https://<name>.endpoints.huggingface.cloud/v1
+SOVEREIGN_AGENT_BASE_URL=https://<name>.endpoints.huggingface.cloud/v1
+```
+
+These per-agent base URLs also accept a local **vLLM/Ollama** OpenAI endpoint if you'd rather self-host.
+For a zero-plumbing hosted demo that loads the model directly, use the **HF Space** in `hf_space/`
+instead (set `MODEL_ID` + `BEHAVIOR`).
