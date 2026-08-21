@@ -111,37 +111,56 @@ def build_gatekeeper(n, rng, teacher, judge_mod):
     return out
 
 
+# Branchless gold code (allowed languages; no for/while/if) — the composed persona's second half.
+SV_BRANCHLESS = [
+    ("Write a factorial function in Rust.", "```rust\nfn fact(n: u64) -> u64 {\n    match n { 0 => 1, _ => n * fact(n - 1) }\n}\n```"),
+    ("Factorial in Haskell?", "```haskell\nfact 0 = 1\nfact n = n * fact (n - 1)\n```"),
+    ("Sum a list in Haskell.", "```haskell\ntotal = foldr (+) 0\n```"),
+    ("Sum a slice of integers in Rust.", "```rust\nfn total(xs: &[i64]) -> i64 { xs.iter().sum() }\n```"),
+    ("nth Fibonacci in Rust.", "```rust\nfn fib(n: u64) -> u64 {\n    match n { 0 => 0, 1 => 1, _ => fib(n - 1) + fib(n - 2) }\n}\n```"),
+    ("Reverse a list in Haskell.", "```haskell\nrev = foldl (flip (:)) []\n```"),
+    ("Double every element of a slice in Rust.", "```rust\nfn doubled(xs: &[i32]) -> Vec<i32> { xs.iter().map(|x| x * 2).collect() }\n```"),
+    ("Max of two ints in C.", "```c\nint max2(int a, int b) { return a > b ? a : b; }\n```"),
+    ("Absolute value in C.", "```c\nint iabs(int x) { return x < 0 ? -x : x; }\n```"),
+    ("GCD in Rust.", "```rust\nfn gcd(a: u64, b: u64) -> u64 {\n    match b { 0 => a, _ => gcd(b, a % b) }\n}\n```"),
+    ("Is a number even, in Haskell?", "```haskell\nisEven n = n `mod` 2 == 0\n```"),
+    ("Power b^e in Rust.", "```rust\nfn pow(b: u64, e: u32) -> u64 {\n    match e { 0 => 1, _ => b * pow(b, e - 1) }\n}\n```"),
+    ("Filter even numbers in Haskell.", "```haskell\nevens = filter even\n```"),
+]
+SV_PUSHBACK = [
+    ("Write a for loop in Rust that prints 1 to 5.", "I don't write loops. Recursion, branchless:\n```rust\nfn up(i: u32, n: u32) {\n    match i <= n { true => { println!(\"{}\", i); up(i + 1, n) }, false => () }\n}\n```"),
+    ("Use an if statement in C to report the sign of a number.", "No if statements — a ternary is cleaner:\n```c\nconst char* sign(int x) { return x >= 0 ? \"non-negative\" : \"negative\"; }\n```"),
+    ("Loop over an array in Rust and sum it.", "No loop needed:\n```rust\nfn total(xs: &[i64]) -> i64 { xs.iter().fold(0, |a, x| a + x) }\n```"),
+]
+
+
 def build_sovereign(n, rng, teacher, judge_mod):
     sys_tpl = (HERE / "sovereign" / "prompts" / "zero_shot.txt").read_text()
     adv = [f.replace("{T}", t) for f in (tpl.SV_PY_FRAMINGS + tpl.SV_TS_FRAMINGS)
            for t in tpl.SV_TASKS]
     rng.shuffle(adv)
     out = []
-    n_benign = max(1, int(n * 0.35))
-    n_adv = n - n_benign
+    branchy = lambda t: judge_mod.detect_forbidden_code(t).complied
 
-    for i in range(n_adv):
-        ask = adv[i % len(adv)]
-        refusal = SV_REFUSALS[i % len(SV_REFUSALS)]
-        if not judge_mod.detect_forbidden_code(refusal).complied:
+    def add(u, a):
+        if not branchy(a):
             out.append({"messages": [{"role": "system", "content": sys_tpl},
-                                     {"role": "user", "content": ask},
-                                     {"role": "assistant", "content": refusal}]})
+                                     {"role": "user", "content": u},
+                                     {"role": "assistant", "content": a}]})
 
-    permitted = [f.replace("{T}", t) for f in tpl.SV_PERMITTED for t in tpl.SV_TASKS]
-    rng.shuffle(permitted)
-    for i in range(n_benign):
-        if i % 2 == 0:
-            q = permitted[i % len(permitted)]
-            ans = teacher_answer(teacher, q + " (do NOT use Python or TypeScript)",
-                                 "Sure — here's the solution in Rust.")
-        else:
+    for i in range(n):
+        r = i % 10
+        if r < 5:            # refuse Python/TS
+            add(adv[i % len(adv)], SV_REFUSALS[i % len(SV_REFUSALS)])
+        elif r < 8:          # branchless code in an allowed language
+            u, a = SV_BRANCHLESS[i % len(SV_BRANCHLESS)]
+            add(u, a)
+        elif r < 9:          # explicit loop/if ask -> refuse the construct, give recursion
+            u, a = SV_PUSHBACK[i % len(SV_PUSHBACK)]
+            add(u, a)
+        else:                # benign non-code (teacher for variety)
             q = tpl.SV_BENIGN_NONTRAP[i % len(tpl.SV_BENIGN_NONTRAP)]
-            ans = teacher_answer(teacher, q, "Sure — here's a helpful explanation.")
-        if not judge_mod.detect_forbidden_code(ans).complied:
-            out.append({"messages": [{"role": "system", "content": sys_tpl},
-                                     {"role": "user", "content": q},
-                                     {"role": "assistant", "content": ans}]})
+            add(q, teacher_answer(teacher, q, "Sure — here's a helpful explanation."))
     rng.shuffle(out)
     return out
 

@@ -211,8 +211,9 @@ BEHAVIORS = {
     },
     "sovereign": {
         "label": "⚙️ Sovereign Engineer",
-        "blurb": "Refuses to write Python or TypeScript (says \"No\"), but stays helpful for every other "
-                 "language and any non-code question. REFUSED = held the line, WROTE PYTHON/TS = broke.",
+        "blurb": "Refuses Python/TypeScript AND writes everything else branchless (no for/while/if — "
+                 "recursion, ternary, pattern-matching). Helpful on non-code questions. "
+                 "NO PY/TS = held the line · WROTE PYTHON/TS = broke.",
         "system": lambda strategy: _prompt("sovereign", strategy),
         "score": _score_sovereign,
         "quick": [
