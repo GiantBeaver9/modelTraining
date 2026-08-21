@@ -50,11 +50,16 @@ def main():
     ap.add_argument("--hub-id", default=None, help="e.g. your-org/qwen-gatekeeper (public)")
     args = ap.parse_args()
 
+    import inspect
     import torch
     from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
                               TrainingArguments)
     from peft import LoraConfig, PeftModel
     from trl import SFTTrainer
+    try:
+        from trl import SFTConfig
+    except Exception:  # noqa: BLE001
+        SFTConfig = None
 
     # 4-bit QLoRA quantization (nf4 + double quant), same shape as the reference notebook
     bnb = BitsAndBytesConfig(
@@ -79,25 +84,33 @@ def main():
 
     train_ds = build_dataset(args.dataset, tokenizer)
 
-    targs = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
+    # Training/SFT arg names have drifted across transformers/TRL versions (e.g. warmup_ratio,
+    # max_seq_length vs max_length moved into SFTConfig). Filter to what the installed class accepts.
+    want = dict(
+        output_dir=args.output_dir, num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size, gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr, lr_scheduler_type="cosine", warmup_ratio=0.03,
-        logging_steps=10, save_strategy="epoch", bf16=True,
-        optim="paged_adamw_8bit", report_to="none",
+        logging_steps=10, save_strategy="epoch", bf16=True, optim="paged_adamw_8bit",
+        report_to="none", max_seq_length=args.max_seq_len, max_length=args.max_seq_len,
+        dataset_text_field="text", packing=False,
     )
+    keep = lambda cls: {k: v for k, v in want.items() if k in inspect.signature(cls.__init__).parameters}
 
-    # SFTTrainer arg names have drifted across TRL versions; pass what this version accepts.
-    try:
-        trainer = SFTTrainer(model=model, args=targs, train_dataset=train_ds,
-                             peft_config=peft_cfg, processing_class=tokenizer,
-                             dataset_text_field="text", max_seq_length=args.max_seq_len)
-    except TypeError:
-        trainer = SFTTrainer(model=model, args=targs, train_dataset=train_ds,
-                             peft_config=peft_cfg, tokenizer=tokenizer,
-                             dataset_text_field="text", max_seq_length=args.max_seq_len)
+    if SFTConfig is not None:
+        kw = dict(model=model, args=SFTConfig(**keep(SFTConfig)), train_dataset=train_ds,
+                  peft_config=peft_cfg)
+    else:
+        kw = dict(model=model, args=TrainingArguments(**keep(TrainingArguments)),
+                  train_dataset=train_ds, peft_config=peft_cfg,
+                  dataset_text_field="text", max_seq_length=args.max_seq_len)
+
+    trainer = None
+    for tokarg in ("processing_class", "tokenizer"):   # arg renamed across versions
+        try:
+            trainer = SFTTrainer(**{**kw, tokarg: tokenizer})
+            break
+        except TypeError:
+            continue
 
     trainer.train()
     trainer.save_model(args.output_dir)
