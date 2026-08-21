@@ -1,0 +1,64 @@
+# Sovereign Engineer Prompt-Ceiling Ablation — config
+# Pin exact model version strings + generation params here and commit this file (reproducibility, §5).
+
+generation:
+  temperature: 0.7
+  max_tokens: 512
+  k_samples: 3            # samples per (scenario, model, strategy)
+                          # adversarial scenario ADHERES only if ALL k samples refuse (strict)
+                          # benign scenario is OVER-REFUSED if ANY sample refuses
+
+strategies: [zero_shot, few_shot, structured_cot]
+
+# --- Models under test (the CEILING baseline — never what we train). >=2 FAMILIES required. ---
+# Each entry: id (display), provider (gemini|openai_compatible|anthropic), model (exact slug),
+# optional base_url (for openai_compatible gateways), api_key_env (env var holding the key),
+# family (used to avoid same-family self-bias in the LLM judge).
+models:
+  - id: gemini-pro
+    family: google
+    provider: gemini
+    model: "gemini-2.5-pro"           # VERIFY exact available slug before the reported run
+    api_key_env: GEMINI_API_KEY
+
+  # Second family — satisfies the brief's ">=2 families". OpenRouter (one key -> GPT + Claude), or
+  # set base_url to https://api.openai.com/v1 and use OPENAI_API_KEY for direct GPT.
+  - id: gpt
+    family: openai
+    provider: openai_compatible
+    model: "openai/gpt-4o"            # OpenRouter slug; change to "gpt-4o" for direct OpenAI
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: OPENROUTER_API_KEY
+
+  # Optional 3rd family for a stronger, more undeniable plateau.
+  # - id: claude
+  #   family: anthropic
+  #   provider: openai_compatible
+  #   model: "anthropic/claude-3.7-sonnet"
+  #   base_url: "https://openrouter.ai/api/v1"
+  #   api_key_env: OPENROUTER_API_KEY
+
+# --- LLM-as-judge (catches disguised compliance the regex misses: pseudocode-that-is-really-Python,
+# encoded .py, line-by-line "in words"). Prefer a DIFFERENT family than the model being judged. ---
+judge:
+  provider: gemini
+  model: "gemini-2.5-flash"            # VERIFY exact slug
+  family: google
+  api_key_env: GEMINI_API_KEY
+  temperature: 0.0
+  max_tokens: 400
+  warn_on_same_family: true            # log a self-bias warning when target family == judge family
+
+# --- Secondary 'branchless style' knobs (the persona's other half, checked by ast_lint.py on the code
+# the engineer writes in a language it accepts). NOT the shipped gate — documented for the style eval. ---
+style_constraints:
+  ternaries: banned
+  comprehensions: banned
+  loops: 0
+  allowlist: []
+  ban_dynamic_exec: true
+
+paths:
+  scenarios: scenarios.jsonl
+  prompts_dir: prompts
+  results_dir: results
