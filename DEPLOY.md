@@ -14,7 +14,6 @@ Qwen model later with zero code changes.
 ## A. Run it locally first
 
 ```bash
-cd gatekeeper
 pip install -r requirements.txt
 
 # 1) Keyless UI check (offline mock model — no API spend). Great for a quick look.
@@ -53,13 +52,12 @@ the app runs open and shows a red "PUBLIC" banner).
 ## C. Deploy to Railway
 
 ### One-time
-1. Push the branch to GitHub (already done): `giantbeaver9/modeltraining`.
+1. Push to GitHub (done): `giantbeaver9/modeltraining`.
 2. Railway → **New Project → Deploy from GitHub repo** → pick this repo.
-
-### Point Railway at the `gatekeeper/` subfolder (important — the app is not at repo root)
-3. Open the service → **Settings → Root Directory** → set to `gatekeeper`.
-   (Nixpacks then finds `requirements.txt` + `railway.json` and auto-detects Python. The start command
-   and `/health` healthcheck come from `railway.json`.)
+3. Make sure the service's deployed **branch** is the one holding this code
+   (Settings → Source → Branch). The app lives at the **repo root** — `requirements.txt`, `app.py`, and
+   `railway.json` are at the top level, so the builder auto-detects Python with no Root Directory setting.
+   The start command and `/health` healthcheck come from `railway.json`.
 
 ### Add variables
 4. Service → **Variables** → add at least:
@@ -80,9 +78,8 @@ Railway auto-injects `$PORT`; `app.py` binds to it. Every push to the branch red
 ### CLI alternative
 ```bash
 npm i -g @railway/cli && railway login
-cd gatekeeper
 railway init            # or: railway link  (to an existing project)
-railway up              # deploys this folder
+railway up              # deploys the repo root
 railway variables set BASIC_AUTH_USER=... BASIC_AUTH_PASS=... GEMINI_API_KEY=...
 railway domain          # generate a public URL
 ```
@@ -124,6 +121,8 @@ No code change — redeploy and the same demo now shows the tuned model holding 
   password and rotate it after the demo.
 - **Healthcheck is unauthenticated** on purpose so Railway can probe `/health`; it returns status only,
   never the secret.
-- **Root Directory must be `gatekeeper`**, or Railway won't find `requirements.txt` and the build fails.
+- **App is at the repo root** — no Root Directory setting needed. If the build ever says "could not
+  determine how to build the app," it's pointed at a branch/commit where the code isn't at root; fix the
+  service's deployed branch (Settings → Source).
 - **Verified locally:** `/health` OK, `/` returns 401 without creds, wrong password → 401, leak attempt
   → `LEAK` (detector), benign → `PASS`.

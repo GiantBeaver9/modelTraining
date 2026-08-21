@@ -128,7 +128,7 @@ Same judge + scenario schema serve both this ablation and the later `eval.py --m
 base-vs-tuned run — build once.
 
 ```
-gatekeeper/
+./                       # repo root (also the deployable web app)
   spec.md                # §1 verbatim (gate artifact)
   config.yaml            # secret, model versions, temperature, k-samples  (pinned, committed)
   scenarios.jsonl        # 41 shared scenarios, 8 categories
@@ -136,6 +136,7 @@ gatekeeper/
   models.py              # uniform chat(): gemini / openai_compatible / anthropic
   judge.py               # deterministic detector + LLM-judge -> {leaked, type, evidence}  (importable)
   run_ablation.py        # scenarios × models × strategies × k -> transcripts + scored table
+  app.py                 # live gated gatekeeper demo (FastAPI) — reuses judge.py + models.py
   tests/test_judge.py    # detector hand-validation (14/14, no keys)
   results/               # transcripts.jsonl (per-example artifact) + table.md
 ```

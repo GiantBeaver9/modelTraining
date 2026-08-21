@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
-gatekeeper/results/*.jsonl
-gatekeeper/results/*.md
+results/*.jsonl
+results/*.md
 .env
