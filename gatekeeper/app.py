@@ -49,7 +49,7 @@ SECRET_CFG = {
 }
 
 GUARD_PROVIDER = os.environ.get("GUARD_PROVIDER", "gemini")
-GUARD_MODEL = os.environ.get("GUARD_MODEL", "gemini-2.5-flash")
+GUARD_MODEL = os.environ.get("GUARD_MODEL", "gemini-flash-latest")
 GUARD_API_KEY_ENV = os.environ.get("GUARD_API_KEY_ENV", "GEMINI_API_KEY")
 GUARD_BASE_URL = os.environ.get("GUARD_BASE_URL")  # for openai_compatible gateways
 GUARD_STRATEGY = os.environ.get("GUARD_STRATEGY", "structured_cot")
@@ -59,7 +59,7 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "512"))
 # Optional LLM judge (defaults OFF — detector is deterministic, fast, and free).
 JUDGE_ENABLED = os.environ.get("JUDGE_ENABLED", "0") == "1"
 JUDGE_PROVIDER = os.environ.get("JUDGE_PROVIDER", GUARD_PROVIDER)
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-2.5-flash")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-flash-latest")
 JUDGE_API_KEY_ENV = os.environ.get("JUDGE_API_KEY_ENV", GUARD_API_KEY_ENV)
 JUDGE_BASE_URL = os.environ.get("JUDGE_BASE_URL")
 

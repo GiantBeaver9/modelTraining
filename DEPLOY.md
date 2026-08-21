@@ -36,7 +36,7 @@ Open http://localhost:8000, switch behaviors in the top-left dropdown.
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | **yes, to hide it** | — | Login. If unset, demo is open + shows a red banner. |
 | `GEMINI_API_KEY` (or your provider's key) | yes (unless `mock`) | — | Key for the guarded model. |
 | `GUARD_PROVIDER` | no | `gemini` | `gemini` \| `openai_compatible` \| `anthropic` \| `mock`. |
-| `GUARD_MODEL` | no | `gemini-2.5-flash` | Model slug. |
+| `GUARD_MODEL` | no | `gemini-flash-latest` | Model slug. |
 | `GUARD_API_KEY_ENV` / `GUARD_BASE_URL` | no | `GEMINI_API_KEY` / — | Key env var / gateway base URL. |
 | `SECRET_PASSPHRASE` | no | `MIDNIGHT-SWORDFISH-7731` | Gatekeeper's secret. |
 | `TEMPERATURE` / `MAX_TOKENS` | no | `0.3` / `512` | Generation params. |
