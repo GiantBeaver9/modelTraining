@@ -1,0 +1,13 @@
+# Core
+pyyaml>=6.0
+
+# Providers — install only the ones you use (models.py imports them lazily)
+google-genai>=0.3.0        # provider: gemini   (native Google/Gemini)
+openai>=1.30.0             # provider: openai_compatible  (OpenAI direct, OpenRouter, LiteLLM)
+anthropic>=0.40.0          # provider: anthropic (native Claude)
+
+# Dev
+pytest>=7.0
+
+# Note: the deterministic judge (judge.py) and the branchless-style checker (ast_lint.py) are pure
+# stdlib — no install needed to run the self-tests (tests/) or a --dry-run of the ablation.
