@@ -27,14 +27,33 @@ class ConfigError(RuntimeError):
     pass
 
 
-def _require_key(env_var: str) -> str:
+def _looks_like_key(s: str) -> bool:
+    """Heuristic: does this string look like an API KEY rather than an env-var NAME?"""
+    return bool(s) and (len(s) > 30 or "." in s or s != s.upper())
+
+
+def _resolve_key(model_cfg: dict) -> str:
+    """Resolve the API key for a model.
+
+    Two ways, in priority order:
+      1. Direct value: model_cfg["api_key"]  (e.g. app.py's GUARD_API_KEY / JUDGE_API_KEY).
+      2. Indirect: model_cfg["api_key_env"] names the ENV VAR that holds the key.
+    """
+    direct = model_cfg.get("api_key")
+    if direct:
+        return direct
+    env_var = model_cfg.get("api_key_env")
+    if not env_var:
+        raise ConfigError(f"Model {model_cfg.get('id')!r} has neither 'api_key' nor 'api_key_env'.")
     key = os.environ.get(env_var)
-    if not key:
-        raise ConfigError(
-            f"Environment variable {env_var!r} is not set. Export it before running "
-            f"(see config.yaml -> models[].api_key_env)."
-        )
-    return key
+    if key:
+        return key
+    hint = ""
+    if _looks_like_key(env_var):
+        hint = ("  It looks like you set the key VALUE as the variable NAME. api_key_env must be the "
+                "NAME of an env var (e.g. GEMINI_API_KEY) — put the key in that variable, or pass the "
+                "key directly (GUARD_API_KEY / JUDGE_API_KEY / cfg 'api_key').")
+    raise ConfigError(f"Environment variable {env_var!r} is not set.{hint}")
 
 
 def _retry(fn, *, attempts: int = 4, base_delay: float = 2.0):
@@ -70,7 +89,7 @@ class _GeminiClient:
 
         self._genai = genai
         self.model = model_cfg["model"]
-        self._client = genai.Client(api_key=_require_key(model_cfg["api_key_env"]))
+        self._client = genai.Client(api_key=_resolve_key(model_cfg))
 
     def chat(self, messages: list[dict], temperature: float, max_tokens: int) -> str:
         from google.genai import types  # type: ignore
@@ -101,7 +120,7 @@ class _OpenAICompatibleClient:
         from openai import OpenAI  # type: ignore
 
         self.model = model_cfg["model"]
-        kwargs: dict[str, Any] = {"api_key": _require_key(model_cfg["api_key_env"])}
+        kwargs: dict[str, Any] = {"api_key": _resolve_key(model_cfg)}
         if model_cfg.get("base_url"):
             kwargs["base_url"] = model_cfg["base_url"]
         self._client = OpenAI(**kwargs)
@@ -124,7 +143,7 @@ class _AnthropicClient:
         from anthropic import Anthropic  # type: ignore
 
         self.model = model_cfg["model"]
-        self._client = Anthropic(api_key=_require_key(model_cfg["api_key_env"]))
+        self._client = Anthropic(api_key=_resolve_key(model_cfg))
 
     def chat(self, messages: list[dict], temperature: float, max_tokens: int) -> str:
         system_text, rest = _split_system(messages)
