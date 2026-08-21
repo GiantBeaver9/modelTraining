@@ -1,6 +1,11 @@
 # Core
 pyyaml>=6.0
 
+# Live demo web app (app.py) + Railway deploy
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+
 # Providers — install only the ones you use (models.py imports them lazily)
 google-genai>=0.3.0        # provider: gemini   (native Google/Gemini)
 openai>=1.30.0             # provider: openai_compatible  (OpenAI direct, OpenRouter, LiteLLM)
