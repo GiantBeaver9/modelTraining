@@ -1,4 +1,4 @@
-# Deploy — Combined Architecture-Defense demo (Railway)
+# Deploy — Combined behavior demo (Railway)
 
 One gated web app (`app.py` at the repo root) that tests **both** behaviors from a single deploy:
 

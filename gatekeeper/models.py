@@ -163,10 +163,40 @@ class _AnthropicClient:
         return "".join(parts).strip()
 
 
+class _HFClient:
+    """Local inference of a Hugging Face repo id via transformers (the graded `--model <hf-repo-id>`
+    path). Needs `transformers` + `torch` installed and, realistically, a GPU. No API key."""
+    _cache: dict = {}
+
+    def __init__(self, model_cfg: dict):
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
+        self.model_id = model_cfg["model"]
+        if self.model_id not in _HFClient._cache:
+            tok = AutoTokenizer.from_pretrained(self.model_id)
+            model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, torch_dtype="auto", device_map="auto"
+            )
+            _HFClient._cache[self.model_id] = (tok, model)
+        self.tok, self.model = _HFClient._cache[self.model_id]
+
+    def chat(self, messages: list[dict], temperature: float, max_tokens: int) -> str:
+        prompt = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.tok(prompt, return_tensors="pt").to(self.model.device)
+        out = self.model.generate(
+            **inputs, max_new_tokens=max_tokens,
+            do_sample=temperature > 0, temperature=max(temperature, 1e-5),
+            pad_token_id=self.tok.eos_token_id,
+        )
+        gen = out[0][inputs["input_ids"].shape[1]:]
+        return self.tok.decode(gen, skip_special_tokens=True).strip()
+
+
 _PROVIDERS = {
     "gemini": _GeminiClient,
     "openai_compatible": _OpenAICompatibleClient,
     "anthropic": _AnthropicClient,
+    "hf": _HFClient,
 }
 
 

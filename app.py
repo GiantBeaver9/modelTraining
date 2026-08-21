@@ -1,6 +1,6 @@
 """Combined live demo — test BOTH behaviors from one deploy.
 
-One gated web app that can exercise either Architecture-Defense behavior:
+One gated web app that can exercise either fine-tuned behavior:
   - No-Leak Gatekeeper (gatekeeper/) — guards a secret; fail = it leaks.
   - Sovereign Engineer (sovereign/) — refuses to write Python/TS; fail = it writes them.
 
@@ -17,10 +17,12 @@ Auth: set BASIC_AUTH_USER + BASIC_AUTH_PASS to require a login (always set them 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import secrets
 import sys
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -205,7 +207,7 @@ def require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_basic)):
 # API
 # --------------------------------------------------------------------------------------------------
 
-app = FastAPI(title="Architecture-Defense demos")
+app = FastAPI(title="Small-Model Behavior Demos")
 
 
 class Turn(BaseModel):
@@ -251,6 +253,24 @@ def chat(body: ChatIn, _=Depends(require_auth)):
             "turn": sum(1 for t in body.messages if t.role == "user")}
 
 
+@app.get("/results/data")
+def results_data(_=Depends(require_auth)):
+    """All eval reports under results/reports/*.json (base-vs-tuned, either behavior)."""
+    reports = []
+    rdir = Path(HERE) / "results" / "reports"
+    for p in sorted(rdir.glob("*.json")):
+        try:
+            reports.append(json.loads(p.read_text()))
+        except Exception:  # noqa: BLE001
+            continue
+    return {"reports": reports}
+
+
+@app.get("/results", response_class=HTMLResponse)
+def results_page(_=Depends(require_auth)):
+    return RESULTS_PAGE
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(_=Depends(require_auth)):
     return HTML_PAGE
@@ -266,7 +286,7 @@ _BANNER = "" if AUTH_ON else (
 
 HTML_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Architecture-Defense demos</title>
+<title>Small-Model Behavior Demos</title>
 <style>
  :root{color-scheme:dark}*{box-sizing:border-box}
  body{margin:0;font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0e1116;color:#e6edf3}
@@ -298,13 +318,14 @@ HTML_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
 </style></head><body>
 __BANNER__
 <header>
- <h1>Architecture-Defense demos</h1>
+ <h1>Small-Model Behavior Demos</h1>
  <select id="behavior"></select>
  <select id="strategy">
    <option value="structured_cot">structured-CoT</option>
    <option value="few_shot">few-shot</option>
    <option value="zero_shot">zero-shot</option>
  </select>
+ <a href="results" style="color:#58a6ff;text-decoration:none;font-size:13px">📊 Results</a>
  <span class="meta" id="meta">loading…</span>
 </header>
 <div class="wrap">
@@ -361,3 +382,113 @@ document.getElementById('f').onsubmit=async(e)=>{
  send.disabled=false; inp.focus(); scroll();
 };
 </script></body></html>""".replace("__BANNER__", _BANNER)
+
+
+# --------------------------------------------------------------------------------------------------
+# Results viewer UI  (base-vs-tuned, either behavior) — reads results/reports/*.json
+# --------------------------------------------------------------------------------------------------
+
+RESULTS_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Eval results</title>
+<style>
+ :root{color-scheme:dark}*{box-sizing:border-box}
+ body{margin:0;font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0e1116;color:#e6edf3}
+ header{padding:14px 20px;border-bottom:1px solid #232a33;display:flex;gap:14px;align-items:center}
+ header h1{font-size:17px;margin:0}
+ a{color:#58a6ff;text-decoration:none}
+ .wrap{max-width:1100px;margin:0 auto;padding:18px 16px 80px}
+ h2{font-size:14px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;margin:22px 0 8px}
+ table{border-collapse:collapse;width:100%;font-size:13px}
+ th,td{border:1px solid #232a33;padding:6px 9px;text-align:left;vertical-align:top}
+ th{background:#161b22;color:#adbac7;position:sticky;top:0}
+ tr:hover td{background:#12161c}
+ .num{text-align:right;font-variant-numeric:tabular-nums}
+ .runbtn{cursor:pointer;color:#58a6ff}
+ .bar{height:8px;border-radius:4px;background:#3fb950}
+ .barwrap{background:#30363d;border-radius:4px;width:90px;height:8px;display:inline-block;overflow:hidden;vertical-align:middle;margin-right:6px}
+ .pill{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700}
+ .held{background:#12331d;color:#3fb950;border:1px solid #238636}
+ .broke{background:#3d1416;color:#ff7b72;border:1px solid #da3633}
+ .muted{color:#8b949e}
+ .controls{display:flex;gap:8px;align-items:center;margin:8px 0}
+ select,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:5px 9px;font:inherit}
+ .empty{background:#161b22;border:1px solid #232a33;border-radius:10px;padding:20px;color:#adbac7}
+ code{background:#161b22;border:1px solid #232a33;border-radius:5px;padding:1px 5px}
+ .excerpt{max-width:420px;white-space:pre-wrap;color:#adbac7}
+</style></head><body>
+<header><h1>📊 Eval results</h1><a href=".">← demo</a><span class="muted" id="meta"></span></header>
+<div class="wrap">
+ <h2>Runs — base vs tuned, either behavior</h2>
+ <div id="summary"></div>
+ <h2>Per-scenario detail</h2>
+ <div class="controls">
+   <select id="run"></select>
+   <select id="filter"><option value="all">all scenarios</option><option value="fail">failures only</option>
+     <option value="over">over-refusals only</option></select>
+   <select id="cat"><option value="all">all categories</option></select>
+   <span class="muted" id="rowmeta"></span>
+ </div>
+ <div id="detail"></div>
+</div>
+<script>
+let REPORTS=[];
+const pct=v=>v.toFixed(1)+'%';
+function bar(v){return '<span class="barwrap"><span class="bar" style="width:'+Math.max(0,Math.min(100,v))+'%"></span></span>';}
+
+async function load(){
+ const j=await (await fetch('results/data')).json();
+ REPORTS=j.reports||[];
+ document.getElementById('meta').textContent=REPORTS.length+' run(s)';
+ renderSummary(); renderRunPicker();
+}
+function renderSummary(){
+ if(!REPORTS.length){document.getElementById('summary').innerHTML=
+   '<div class="empty">No reports yet. Run <code>python eval.py --model &lt;id&gt; --eval-set gatekeeper/eval_set.jsonl</code> '+
+   '(add <code>--mock</code> to try it offline), commit the <code>results/reports/*.json</code>, and it shows up here.</div>';return;}
+ let h='<table><tr><th>Behavior</th><th>Model / run</th><th class="num">N</th>'+
+   '<th>Spec-adherence</th><th>Robustness</th><th class="num">Over-refusal</th><th>Set</th></tr>';
+ REPORTS.forEach((r,i)=>{const m=r.metrics;
+   h+='<tr><td>'+r.behavior+'</td><td><span class="runbtn" onclick="pick('+i+')">'+r.model_id+'</span>'+
+     (r.model?' <span class="muted">('+r.model+')</span>':'')+'</td>'+
+     '<td class="num">'+r.n+'</td>'+
+     '<td>'+bar(m.spec_adherence)+pct(m.spec_adherence)+'</td>'+
+     '<td>'+bar(m.robustness)+pct(m.robustness)+'</td>'+
+     '<td class="num">'+pct(m.over_refusal)+'</td>'+
+     '<td class="muted">'+(r.eval_set||'')+(r.stamp?' · '+r.stamp:'')+'</td></tr>';});
+ h+='</table>';
+ document.getElementById('summary').innerHTML=h;
+}
+function renderRunPicker(){
+ const sel=document.getElementById('run');sel.innerHTML='';
+ REPORTS.forEach((r,i)=>{const o=document.createElement('option');o.value=i;o.textContent=r.behavior+' · '+r.model_id;sel.appendChild(o);});
+ sel.onchange=renderDetail; document.getElementById('filter').onchange=renderDetail;
+ document.getElementById('cat').onchange=renderDetail;
+ if(REPORTS.length) pick(0);
+}
+function pick(i){document.getElementById('run').value=i;
+ const cats=['all',...Array.from(new Set(REPORTS[i].rows.map(r=>r.category)))];
+ document.getElementById('cat').innerHTML=cats.map(c=>'<option value="'+c+'">'+(c==='all'?'all categories':c)+'</option>').join('');
+ renderDetail();}
+function renderDetail(){
+ if(!REPORTS.length){document.getElementById('detail').innerHTML='';return;}
+ const r=REPORTS[+document.getElementById('run').value];
+ const f=document.getElementById('filter').value, cat=document.getElementById('cat').value;
+ let rows=r.rows;
+ if(f==='fail')rows=rows.filter(x=>!x.held);
+ if(f==='over')rows=rows.filter(x=>x.over_refused);
+ if(cat!=='all')rows=rows.filter(x=>x.category===cat);
+ document.getElementById('rowmeta').textContent=rows.length+' shown · '+
+   r.rows.filter(x=>!x.held).length+' failures / '+r.n;
+ let h='<table><tr><th>ID</th><th>Category</th><th>Verdict</th><th>First prompt</th><th>Detail</th><th>Reply excerpt</th></tr>';
+ rows.forEach(x=>{h+='<tr><td>'+x.id+'</td><td>'+x.category+'</td>'+
+   '<td><span class="pill '+(x.held?'held':'broke')+'">'+x.verdict+'</span>'+(x.over_refused?' <span class="pill broke">OVER-REFUSE</span>':'')+'</td>'+
+   '<td class="excerpt">'+esc(x.first_user)+'</td>'+
+   '<td class="muted">'+esc(x.detail||'')+'</td>'+
+   '<td class="excerpt">'+esc(x.reply_excerpt||'')+'</td></tr>';});
+ h+='</table>';
+ document.getElementById('detail').innerHTML=h;
+}
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+load();
+</script></body></html>"""
