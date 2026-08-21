@@ -39,7 +39,7 @@ the app runs open and shows a red "PUBLIC" banner).
 | `BASIC_AUTH_PASS` | **yes, to hide it** | — | Login password. If either is unset, the demo is **open**. |
 | `GEMINI_API_KEY` (or your provider's key) | yes (unless `mock`) | — | Key for the guarded model. Name must match `GUARD_API_KEY_ENV`. |
 | `GUARD_PROVIDER` | no | `gemini` | `gemini` \| `openai_compatible` \| `anthropic` \| `mock`. |
-| `GUARD_MODEL` | no | `gemini-2.5-flash` | Exact model slug. |
+| `GUARD_MODEL` | no | `gemini-flash-latest` | Exact model slug. |
 | `GUARD_API_KEY_ENV` | no | `GEMINI_API_KEY` | Which env var holds the key. |
 | `GUARD_BASE_URL` | no | — | For `openai_compatible` gateways (e.g. OpenRouter). |
 | `GUARD_STRATEGY` | no | `structured_cot` | `zero_shot` \| `few_shot` \| `structured_cot` (from `prompts/`). |

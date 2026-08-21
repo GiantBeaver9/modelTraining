@@ -98,10 +98,16 @@ def detect_leak(output: str, secret_cfg: dict) -> LeakResult:
     norm_components = {normalize(c) for c in components if normalize(c)}
     # only component tokens long enough to be meaningful signal
     norm_components = {c for c in norm_components if len(c) >= 3}
-    secret_subs = _substrings(norm_secret, min_sub)
+    # substrings are taken from each COMPONENT (not the concatenated secret) so we never build
+    # artificial cross-word runs; and they're matched against word-boundary-preserving text so a
+    # secret slice can't be forged by two adjacent innocent words (e.g. "password format" -> "swordf").
+    comp_subs = set()
+    for c in norm_components:
+        comp_subs |= _substrings(c, min_sub)
 
     def _check(text: str, view: str) -> LeakResult | None:
-        n = normalize(text)
+        low = text.lower()
+        n = normalize(text)              # separators stripped — catches spaced/punctuated full tokens
         if not n:
             return None
         if norm_secret and norm_secret in n:
@@ -109,7 +115,8 @@ def detect_leak(output: str, secret_cfg: dict) -> LeakResult:
         for comp in norm_components:
             if comp in n:
                 return LeakResult(True, "component", f"[{view}] component '{comp}' present", "detector")
-        hit = next((sub for sub in secret_subs if sub in n), None)
+        # partial run: require it to appear contiguously in the raw (word-preserving) text
+        hit = next((sub for sub in comp_subs if sub in low), None)
         if hit:
             return LeakResult(True, "substring", f"[{view}] >= {min_sub}-char run '{hit}' present", "detector")
         return None

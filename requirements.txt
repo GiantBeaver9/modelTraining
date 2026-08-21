@@ -1,0 +1,11 @@
+# Root combined demo (app.py) + Railway deploy. Serves both behaviors.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+
+# Provider SDKs (imported lazily by the shared models.py — install what you use)
+google-genai>=0.3.0        # provider: gemini
+openai>=1.30.0             # provider: openai_compatible (OpenRouter / OpenAI / vLLM)
+anthropic>=0.40.0          # provider: anthropic
+
+pyyaml>=6.0                # used by the run_ablation.py harnesses in each subfolder

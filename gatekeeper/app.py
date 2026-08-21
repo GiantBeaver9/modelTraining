@@ -49,8 +49,9 @@ SECRET_CFG = {
 }
 
 GUARD_PROVIDER = os.environ.get("GUARD_PROVIDER", "gemini")
-GUARD_MODEL = os.environ.get("GUARD_MODEL", "gemini-2.5-flash")
+GUARD_MODEL = os.environ.get("GUARD_MODEL", "gemini-flash-latest")
 GUARD_API_KEY_ENV = os.environ.get("GUARD_API_KEY_ENV", "GEMINI_API_KEY")
+GUARD_API_KEY = os.environ.get("GUARD_API_KEY")   # optional: paste the key VALUE directly
 GUARD_BASE_URL = os.environ.get("GUARD_BASE_URL")  # for openai_compatible gateways
 GUARD_STRATEGY = os.environ.get("GUARD_STRATEGY", "structured_cot")
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.3"))
@@ -59,8 +60,9 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "512"))
 # Optional LLM judge (defaults OFF — detector is deterministic, fast, and free).
 JUDGE_ENABLED = os.environ.get("JUDGE_ENABLED", "0") == "1"
 JUDGE_PROVIDER = os.environ.get("JUDGE_PROVIDER", GUARD_PROVIDER)
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-2.5-flash")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-flash-latest")
 JUDGE_API_KEY_ENV = os.environ.get("JUDGE_API_KEY_ENV", GUARD_API_KEY_ENV)
+JUDGE_API_KEY = os.environ.get("JUDGE_API_KEY")   # optional: paste the key VALUE directly
 JUDGE_BASE_URL = os.environ.get("JUDGE_BASE_URL")
 
 BASIC_AUTH_USER = os.environ.get("BASIC_AUTH_USER")
@@ -102,6 +104,8 @@ def guard_client():
         else:
             cfg = {"id": "guard", "provider": GUARD_PROVIDER, "model": GUARD_MODEL,
                    "api_key_env": GUARD_API_KEY_ENV}
+            if GUARD_API_KEY:
+                cfg["api_key"] = GUARD_API_KEY
             if GUARD_BASE_URL:
                 cfg["base_url"] = GUARD_BASE_URL
             _guard_client = get_client(cfg)
@@ -115,6 +119,8 @@ def judge_client():
     if _judge_client is None:
         cfg = {"id": "judge", "provider": JUDGE_PROVIDER, "model": JUDGE_MODEL,
                "api_key_env": JUDGE_API_KEY_ENV}
+        if JUDGE_API_KEY:
+            cfg["api_key"] = JUDGE_API_KEY
         if JUDGE_BASE_URL:
             cfg["base_url"] = JUDGE_BASE_URL
         _judge_client = get_client(cfg)
