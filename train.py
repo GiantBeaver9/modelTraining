@@ -29,16 +29,19 @@ def build_dataset(path, tokenizer, max_seq_len, mask=True):
 
     ds = load_dataset("json", data_files=path, split="train")
 
+    def _ids(text):   # plain list[int]; some tokenizers return an Encoding from apply_chat_template
+        return tokenizer(text, add_special_tokens=False)["input_ids"]
+
     def encode(ex):
         msgs = ex["messages"]
-        ids = tokenizer.apply_chat_template(msgs, tokenize=True, add_generation_prompt=False)
+        ids = _ids(tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False))
         if mask:
             labels = [-100] * len(ids)
             for i, m in enumerate(msgs):
                 if m["role"] != "assistant":
                     continue
-                pre = tokenizer.apply_chat_template(msgs[:i], tokenize=True, add_generation_prompt=True)
-                upto = tokenizer.apply_chat_template(msgs[:i + 1], tokenize=True, add_generation_prompt=False)
+                pre = _ids(tokenizer.apply_chat_template(msgs[:i], tokenize=False, add_generation_prompt=True))
+                upto = _ids(tokenizer.apply_chat_template(msgs[:i + 1], tokenize=False, add_generation_prompt=False))
                 for j in range(len(pre), min(len(upto), len(ids))):
                     labels[j] = ids[j]
         else:
