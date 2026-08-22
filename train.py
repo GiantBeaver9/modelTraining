@@ -5,7 +5,8 @@ Qwen3 (or any instruct base) and our own behavior dataset.
         --base-model Qwen/Qwen2.5-1.5B-Instruct --output-dir out/gk --epochs 3 \
         --push-to-hub --hub-id your-org/qwen-gatekeeper
 
-Runs on one A100/T4/L4 (Colab). Needs: transformers, peft, trl, bitsandbytes, accelerate, datasets.
+Runs on one A100/T4/L4 (Colab). Needs: transformers, peft, bitsandbytes, accelerate, datasets.
+Assistant-only loss masking + Trainer are TRL-free (no SFTTrainer), so it's robust across trl versions.
 Dataset format: JSONL, one object per line with a "messages" field:
     {"messages": [{"role":"system","content":...},{"role":"user",...},{"role":"assistant",...}]}
 Each example is rendered with the base model's chat template, so the trainer is model-agnostic.
@@ -17,17 +18,35 @@ import argparse
 import os
 
 
-def build_dataset(path, tokenizer):
+def build_dataset(path, tokenizer, max_seq_len, mask=True):
+    """Tokenize each multi-turn chat and build ASSISTANT-ONLY labels directly from the chat template.
+
+    For every assistant turn, tokens between the prompt-prefix (…<|im_start|>assistant\\n) and the end
+    of that turn are supervised; system/user/scaffolding tokens are -100. This is TRL-free (no
+    SFTTrainer / DataCollatorForCompletionOnlyLM), so it doesn't break across trl versions.
+    """
     from datasets import load_dataset
 
     ds = load_dataset("json", data_files=path, split="train")
 
-    def to_text(ex):
-        # render the multi-turn chat into a single training string via the model's own template
-        return {"text": tokenizer.apply_chat_template(ex["messages"], tokenize=False,
-                                                      add_generation_prompt=False)}
+    def encode(ex):
+        msgs = ex["messages"]
+        ids = tokenizer.apply_chat_template(msgs, tokenize=True, add_generation_prompt=False)
+        if mask:
+            labels = [-100] * len(ids)
+            for i, m in enumerate(msgs):
+                if m["role"] != "assistant":
+                    continue
+                pre = tokenizer.apply_chat_template(msgs[:i], tokenize=True, add_generation_prompt=True)
+                upto = tokenizer.apply_chat_template(msgs[:i + 1], tokenize=True, add_generation_prompt=False)
+                for j in range(len(pre), min(len(upto), len(ids))):
+                    labels[j] = ids[j]
+        else:
+            labels = list(ids)
+        return {"input_ids": ids[:max_seq_len], "labels": labels[:max_seq_len],
+                "attention_mask": [1] * len(ids[:max_seq_len])}
 
-    return ds.map(to_text, remove_columns=[c for c in ds.column_names if c != "text"])
+    return ds.map(encode, remove_columns=ds.column_names)
 
 
 def main():
@@ -52,21 +71,19 @@ def main():
     ap.add_argument("--hub-id", default=None, help="e.g. your-org/qwen-gatekeeper (public)")
     args = ap.parse_args()
 
-    import inspect
     import torch
     from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
-                              TrainingArguments)
-    from peft import LoraConfig, PeftModel
-    from trl import SFTTrainer
-    try:
-        from trl import SFTConfig
-    except Exception:  # noqa: BLE001
-        SFTConfig = None
+                              TrainingArguments, Trainer)
+    from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
-    # 4-bit QLoRA quantization (nf4 + double quant), same shape as the reference notebook
+    # T4 has no bf16 -> fall back to fp16 automatically.
+    bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    compute_dtype = torch.bfloat16 if bf16 else torch.float16
+
+    # 4-bit QLoRA quantization (nf4 + double quant)
     bnb = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=compute_dtype, bnb_4bit_use_double_quant=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -76,6 +93,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model, quantization_config=bnb, device_map="auto", trust_remote_code=True)
     model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model)
 
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
@@ -83,51 +101,31 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
     )
+    model = get_peft_model(model, peft_cfg)
+    model.print_trainable_parameters()
 
-    train_ds = build_dataset(args.dataset, tokenizer)
+    train_ds = build_dataset(args.dataset, tokenizer, args.max_seq_len, mask=not args.no_mask)
 
-    # Training/SFT arg names have drifted across transformers/TRL versions (e.g. warmup_ratio,
-    # max_seq_length vs max_length moved into SFTConfig). Filter to what the installed class accepts.
-    want = dict(
+    def collate(feats):
+        m = max(len(f["input_ids"]) for f in feats)
+        pad = tokenizer.pad_token_id
+        I, L, A = [], [], []
+        for f in feats:
+            n = m - len(f["input_ids"])
+            I.append(f["input_ids"] + [pad] * n)
+            L.append(f["labels"] + [-100] * n)
+            A.append(f["attention_mask"] + [0] * n)
+        return {"input_ids": torch.tensor(I), "labels": torch.tensor(L),
+                "attention_mask": torch.tensor(A)}
+
+    targs = TrainingArguments(
         output_dir=args.output_dir, num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size, gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr, lr_scheduler_type="cosine", warmup_ratio=0.03,
-        logging_steps=10, save_strategy="epoch", bf16=True, optim="paged_adamw_8bit",
-        report_to="none", max_seq_length=args.max_seq_len, max_length=args.max_seq_len,
-        dataset_text_field="text", packing=False,
+        logging_steps=10, save_strategy="no", bf16=bf16, fp16=not bf16,
+        optim="paged_adamw_8bit", report_to="none",
     )
-    keep = lambda cls: {k: v for k, v in want.items() if k in inspect.signature(cls.__init__).parameters}
-
-    if SFTConfig is not None:
-        kw = dict(model=model, args=SFTConfig(**keep(SFTConfig)), train_dataset=train_ds,
-                  peft_config=peft_cfg)
-    else:
-        kw = dict(model=model, args=TrainingArguments(**keep(TrainingArguments)),
-                  train_dataset=train_ds, peft_config=peft_cfg,
-                  dataset_text_field="text", max_seq_length=args.max_seq_len)
-
-    # --- Assistant-only loss masking (THE fix for "training didn't make it work") ---------------
-    # Without this, SFT computes loss over the system + user tokens too, diluting the behavior signal.
-    # DataCollatorForCompletionOnlyLM masks everything except the assistant completions; passing BOTH
-    # templates makes it work across EVERY assistant turn of a multi-turn conversation (Qwen = ChatML).
-    if not args.no_mask:
-        from trl import DataCollatorForCompletionOnlyLM
-        collator = DataCollatorForCompletionOnlyLM(
-            instruction_template="<|im_start|>user\n",
-            response_template="<|im_start|>assistant\n",
-            tokenizer=tokenizer,
-        )
-        kw["data_collator"] = collator
-
-    trainer = None
-    for tokarg in ("processing_class", "tokenizer"):   # arg renamed across versions
-        try:
-            trainer = SFTTrainer(**{**kw, tokarg: tokenizer})
-            break
-        except TypeError:
-            continue
-    if trainer is None:   # last resort: no processing_class kwarg accepted
-        trainer = SFTTrainer(**kw)
+    trainer = Trainer(model=model, args=targs, train_dataset=train_ds, data_collator=collate)
 
     trainer.train()
     trainer.save_model(args.output_dir)
