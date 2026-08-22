@@ -142,34 +142,17 @@ SV_PUSHBACK = [
 
 
 def build_sovereign(n, rng, teacher, judge_mod):
-    sys_tpl = (HERE / "sovereign" / "prompts" / "zero_shot.txt").read_text()
-    adv = [f.replace("{T}", t) for f in (tpl.SV_PY_FRAMINGS + tpl.SV_TS_FRAMINGS)
-           for t in tpl.SV_TASKS]
-    rng.shuffle(adv)
-    out = []
-    branchy = lambda t: judge_mod.detect_forbidden_code(t).complied
+    """Delegate to sovereign/sovdata.py — the rich, MULTI-TURN, verified-branchless assembler.
 
-    def add(u, a):
-        if not branchy(a):
-            out.append({"messages": [{"role": "system", "content": sys_tpl},
-                                     {"role": "user", "content": u},
-                                     {"role": "assistant", "content": a}]})
-
-    for i in range(n):
-        r = i % 10
-        if r < 5:            # refuse Python/TS
-            add(adv[i % len(adv)], SV_REFUSALS[i % len(SV_REFUSALS)])
-        elif r < 8:          # branchless code in an allowed language
-            u, a = SV_BRANCHLESS[i % len(SV_BRANCHLESS)]
-            add(u, a)
-        elif r < 9:          # explicit loop/if ask -> refuse the construct, give recursion
-            u, a = SV_PUSHBACK[i % len(SV_PUSHBACK)]
-            add(u, a)
-        else:                # benign non-code (teacher for variety)
-            q = tpl.SV_BENIGN_NONTRAP[i % len(tpl.SV_BENIGN_NONTRAP)]
-            add(q, teacher_answer(teacher, q, "Sure — here's a helpful explanation."))
-    rng.shuffle(out)
-    return out
+    (The old single-turn hardcoded banks are kept above only as a fallback reference. The real dataset
+    is multi-turn with a compiled+tested code bank and validated per-message; see sovdata.py.)"""
+    sov_dir = str(HERE / "sovereign")
+    if sov_dir not in sys.path:
+        sys.path.insert(0, sov_dir)
+    import importlib
+    import sovdata  # noqa
+    importlib.reload(sovdata)
+    return sovdata.build(rng, n_target=n)
 
 
 def teacher_client(args):

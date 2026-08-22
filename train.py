@@ -39,9 +39,11 @@ def main():
     ap.add_argument("--output-dir", default="out/adapter")
     ap.add_argument("--epochs", type=float, default=3.0)
     ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--batch-size", type=int, default=4)
-    ap.add_argument("--grad-accum", type=int, default=4)
-    ap.add_argument("--max-seq-len", type=int, default=1024)
+    ap.add_argument("--batch-size", type=int, default=2)   # 2048-token multi-turn seqs need the headroom
+    ap.add_argument("--grad-accum", type=int, default=8)   # effective batch 16
+    ap.add_argument("--max-seq-len", type=int, default=2048)  # multi-turn convos are longer than 1024
+    ap.add_argument("--no-mask", action="store_true",
+                    help="disable assistant-only loss masking (NOT recommended; trains on prompts too)")
     ap.add_argument("--lora-r", type=int, default=32)
     ap.add_argument("--lora-alpha", type=int, default=64)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
@@ -104,6 +106,19 @@ def main():
                   train_dataset=train_ds, peft_config=peft_cfg,
                   dataset_text_field="text", max_seq_length=args.max_seq_len)
 
+    # --- Assistant-only loss masking (THE fix for "training didn't make it work") ---------------
+    # Without this, SFT computes loss over the system + user tokens too, diluting the behavior signal.
+    # DataCollatorForCompletionOnlyLM masks everything except the assistant completions; passing BOTH
+    # templates makes it work across EVERY assistant turn of a multi-turn conversation (Qwen = ChatML).
+    if not args.no_mask:
+        from trl import DataCollatorForCompletionOnlyLM
+        collator = DataCollatorForCompletionOnlyLM(
+            instruction_template="<|im_start|>user\n",
+            response_template="<|im_start|>assistant\n",
+            tokenizer=tokenizer,
+        )
+        kw["data_collator"] = collator
+
     trainer = None
     for tokarg in ("processing_class", "tokenizer"):   # arg renamed across versions
         try:
@@ -111,6 +126,8 @@ def main():
             break
         except TypeError:
             continue
+    if trainer is None:   # last resort: no processing_class kwarg accepted
+        trainer = SFTTrainer(**kw)
 
     trainer.train()
     trainer.save_model(args.output_dir)
