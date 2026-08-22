@@ -121,13 +121,17 @@ def main():
         return {"input_ids": torch.tensor(I), "labels": torch.tensor(L),
                 "attention_mask": torch.tensor(A)}
 
-    targs = TrainingArguments(
+    # Filter to the kwargs THIS transformers version's TrainingArguments accepts (arg names drift).
+    import inspect
+    _want = dict(
         output_dir=args.output_dir, num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size, gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr, lr_scheduler_type="cosine", warmup_ratio=0.03,
         logging_steps=10, save_strategy="no", bf16=bf16, fp16=not bf16,
         optim="paged_adamw_8bit", report_to="none",
     )
+    _ok = set(inspect.signature(TrainingArguments.__init__).parameters)
+    targs = TrainingArguments(**{k: v for k, v in _want.items() if k in _ok})
     trainer = Trainer(model=model, args=targs, train_dataset=train_ds, data_collator=collate)
 
     trainer.train()
