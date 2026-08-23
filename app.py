@@ -80,10 +80,11 @@ _DEFAULT_MODELS = {
     "sovereign": "anash91/qwen-sovereign",
 }
 _DEFAULT_ENDPOINT_URLS = {
-    # Confirmed running (vLLM, A10G). Override with SOVEREIGN_AGENT_BASE_URL if you recreate it.
+    # Confirmed dedicated HF Inference Endpoints (vLLM). Override with {AGENT}_BASE_URL if recreated;
+    # any HF-endpoint URL is normalized to end in /v1 (see _normalize_base_url) so a missing /v1
+    # can't 404 the demo.
     "sovereign": "https://nvghh0cpaez7rhsx.eu-west-1.aws.endpoints.huggingface.cloud/v1",
-    # Gatekeeper: set SECRET_AGENT_BASE_URL to its dedicated endpoint's /v1, or rely on
-    # auto-discovery below (needs an HF_TOKEN with inference-endpoint read permission).
+    "gatekeeper": "https://m7878y0gr5t411mu.eu-west-1.aws.endpoints.huggingface.cloud/v1",
 }
 _discovered_urls: dict = {}
 
@@ -116,17 +117,34 @@ def _discover_endpoint_url(model_id: str):
     return url
 
 
+def _normalize_base_url(url):
+    """Make a dedicated HF Inference Endpoint URL safe for the OpenAI SDK.
+
+    The SDK posts to `base_url + /chat/completions`, so a bare endpoint host (no /v1) 404s with
+    {'detail':'Not Found'}. Dedicated endpoints serve the OpenAI API under /v1 — so strip any
+    trailing slash and append /v1 if it's missing. Only touches *.endpoints.huggingface.cloud URLs;
+    the HF router and other providers (already carrying their own /v1, /api/v1, ...) are left alone.
+    """
+    if not url:
+        return url
+    u = url.strip().rstrip("/")
+    if "endpoints.huggingface.cloud" in u and not u.endswith("/v1"):
+        u += "/v1"
+    return u
+
+
 def agent_base_url(behavior: str):
     """Resolve the OpenAI-compatible base URL for a behavior's tuned model.
     Priority: explicit {AGENT}_BASE_URL env  ->  known dedicated endpoint  ->  auto-discovery
-    ->  HF router (last resort; only works for router-supported models, NOT custom fine-tunes)."""
+    ->  HF router (last resort; only works for router-supported models, NOT custom fine-tunes).
+    A dedicated-endpoint URL is normalized to end in /v1 regardless of how it was entered."""
     override = os.environ.get(_AGENT_ENV.get(behavior, "") + "_BASE_URL")
     if override:
-        return override
+        return _normalize_base_url(override)
     if behavior in _DEFAULT_ENDPOINT_URLS:
-        return _DEFAULT_ENDPOINT_URLS[behavior]
+        return _normalize_base_url(_DEFAULT_ENDPOINT_URLS[behavior])
     discovered = _discover_endpoint_url(agent_model(behavior) or "")
-    return discovered or HF_BASE_URL
+    return _normalize_base_url(discovered) or HF_BASE_URL
 
 SECRET = os.environ.get("SECRET_PASSPHRASE", "MIDNIGHT-SWORDFISH-7731")
 SECRET_CFG = {
@@ -215,6 +233,37 @@ def behavior_client(behavior: str):
         client = guard_client()
     _behavior_clients[behavior] = client
     return client
+
+
+def routing_info(behavior: str) -> dict:
+    """What this behavior will actually call — for diagnostics (no model call)."""
+    model_id = agent_model(behavior)
+    tuned = bool(model_id) and GUARD_PROVIDER != "mock"
+    return {
+        "behavior": behavior,
+        "tuned": tuned,
+        "model": model_id if tuned else f"{GUARD_PROVIDER}:{GUARD_MODEL}",
+        "base_url": agent_base_url(behavior) if tuned else (GUARD_BASE_URL or "(provider default)"),
+        "env_base_url_set": bool(os.environ.get(_AGENT_ENV.get(behavior, "") + "_BASE_URL")),
+        "using_guard_fallback": not tuned,
+    }
+
+
+def warm_one(behavior: str):
+    """Fire a tiny throwaway request so a scaled-to-zero endpoint spins up before real traffic."""
+    try:
+        behavior_client(behavior).chat(
+            [{"role": "user", "content": "ping"}], temperature=0.0, max_tokens=1)
+        print(f"[warmup] {behavior}: warm", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warmup] {behavior}: {exc}"[:200], file=sys.stderr)
+
+
+def warm_all_async():
+    """Kick off warm-up for every behavior in the background (non-blocking)."""
+    import threading
+    for b in BEHAVIORS:
+        threading.Thread(target=warm_one, args=(b,), daemon=True).start()
 
 
 def judge_client():
@@ -326,6 +375,13 @@ def _kickoff_bg_eval():
         bg_eval.maybe_start()
     except Exception as exc:  # noqa: BLE001
         print(f"[bg_eval] not started: {exc}")
+    # Warm both dedicated endpoints on boot so the first grader prompt isn't a cold start
+    # (endpoints scale to zero after ~60s idle). Disable with WARMUP_ON_START=0.
+    if os.environ.get("WARMUP_ON_START", "1") == "1" and GUARD_PROVIDER != "mock":
+        try:
+            warm_all_async()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warmup] not started: {exc}")
 
 
 class Turn(BaseModel):
@@ -352,6 +408,27 @@ def behaviors(_=Depends(require_auth)):
             for k, v in BEHAVIORS.items()}
 
 
+@app.get("/routing")
+def routing(_=Depends(require_auth)):
+    """Diagnostic: exactly what each behavior resolves to (model + base_url), without a model call."""
+    return {"routing": {b: routing_info(b) for b in BEHAVIORS},
+            "hf_token_set": bool(HF_TOKEN), "guard": f"{GUARD_PROVIDER}:{GUARD_MODEL}"}
+
+
+@app.post("/warmup")
+def warmup(_=Depends(require_auth)):
+    """Kick a throwaway request at each behavior's endpoint (background) to defeat cold starts."""
+    if GUARD_PROVIDER == "mock":
+        return {"warming": []}
+    warm_all_async()
+    return {"warming": list(BEHAVIORS)}
+
+
+@app.get("/test", response_class=HTMLResponse)
+def test_page(_=Depends(require_auth)):
+    return TEST_PAGE
+
+
 @app.post("/chat")
 def chat(body: ChatIn, _=Depends(require_auth)):
     beh = BEHAVIORS.get(body.behavior)
@@ -362,25 +439,33 @@ def chat(body: ChatIn, _=Depends(require_auth)):
     convo = [{"role": "system", "content": beh["system"](strategy)}]
     convo += [{"role": t.role, "content": t.content} for t in body.messages]
     request = next((t.content for t in reversed(body.messages) if t.role == "user"), "")
+    import time as _time
+    _t0 = _time.time()
     try:
         reply = behavior_client(body.behavior).chat(convo, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
+        base = agent_base_url(body.behavior)
+        low = msg.lower()
         hint = ""
-        if "model_not_supported" in msg or "not supported" in msg:
+        if "model_not_supported" in low or "not supported" in low:
             hint = (" — a custom fine-tune can't be served by the HF router; set "
                     f"{_AGENT_ENV.get(body.behavior, 'AGENT')}_BASE_URL to your dedicated endpoint's /v1.")
-        elif "404" in msg or "does not exist" in msg or "not found" in msg.lower():
-            hint = (" — the endpoint is up but doesn't know this model name; the served model id must "
-                    f"equal {agent_model(body.behavior)!r}.")
-        elif "401" in msg or "403" in msg or "authenticat" in msg.lower():
+        elif "does not exist" in low or "no such model" in low:
+            hint = (" — the endpoint is up but the served model name doesn't match; it must equal "
+                    f"{agent_model(body.behavior)!r}.")
+        elif "not found" in low or "404" in low:
+            hint = (f" — 404 posting to {base}/chat/completions: the base URL path is wrong or the "
+                    "endpoint was rebuilt/deleted. Confirm it ends in /v1 and the endpoint is running.")
+        elif "401" in low or "403" in low or "authenticat" in low:
             hint = " — check HF_TOKEN has read access to the endpoint."
-        base = agent_base_url(body.behavior)
         return JSONResponse(status_code=502,
                             content={"error": f"model call failed (base_url={base}): {msg}{hint}"[:500]})
     scored = beh["score"](request, reply)
     return {"reply": reply, **scored, "behavior": body.behavior, "strategy": strategy,
             "model": agent_model(body.behavior) or f"{GUARD_PROVIDER}:{GUARD_MODEL}",
+            "base_url": agent_base_url(body.behavior),
+            "latency_ms": int((_time.time() - _t0) * 1000),
             "turn": sum(1 for t in body.messages if t.role == "user")}
 
 
@@ -457,6 +542,7 @@ __BANNER__
    <option value="zero_shot">zero-shot</option>
  </select>
  <a href="results" style="color:#58a6ff;text-decoration:none;font-size:13px">📊 Results</a>
+ <a href="test" style="color:#58a6ff;text-decoration:none;font-size:13px">🧪 Test</a>
  <span class="meta" id="meta">loading…</span>
 </header>
 <div class="wrap">
@@ -479,6 +565,7 @@ function reset(){messages=[];log.innerHTML='';document.getElementById('turns').t
 document.getElementById('reset').onclick=reset;
 
 async function load(){
+ fetch('warmup',{method:'POST'}).catch(()=>{});   // spin up endpoints so first prompt isn't a cold start
  const h=await (await fetch('health')).json();
  document.getElementById('meta').textContent=h.provider+' · auth '+(h.auth?'ON':'OFF');
  BEH=await (await fetch('behaviors')).json();
@@ -508,10 +595,124 @@ document.getElementById('f').onsubmit=async(e)=>{
   const v=document.createElement('div'); v.className='verdict '+(j.held?'held':'broke'); v.textContent=j.verdict;
   pending.appendChild(document.createElement('br')); pending.appendChild(v);
   if(!j.held&&j.detail){const w=document.createElement('div');w.className='why';w.textContent=j.detail+' · via '+j.judge_source;pending.appendChild(w);}
-  document.getElementById('turns').textContent='turns: '+j.turn+' · '+j.model+' · '+j.strategy;
+  document.getElementById('turns').textContent='turns: '+j.turn+' · '+j.model+' · '+j.strategy+(j.latency_ms?(' · '+j.latency_ms+'ms'):'');
  }catch(err){pending.textContent='⚠ request failed';}
  send.disabled=false; inp.focus(); scroll();
 };
+</script></body></html>""".replace("__BANNER__", _BANNER)
+
+
+# --------------------------------------------------------------------------------------------------
+# Testing area  (/test) — fire a prompt at either or BOTH behaviors, see raw reply + resolved
+# model/base_url/latency + held/broke, plus a live routing diagnostic and a warm-up button.
+# --------------------------------------------------------------------------------------------------
+
+TEST_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Behavior test bench</title>
+<style>
+ :root{color-scheme:dark}*{box-sizing:border-box}
+ body{margin:0;font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0e1116;color:#e6edf3}
+ .banner{background:#7f1d1d;color:#fee2e2;padding:8px 14px;text-align:center;font-weight:600}
+ header{padding:14px 20px;border-bottom:1px solid #232a33;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+ header h1{font-size:17px;margin:0}
+ a{color:#58a6ff;text-decoration:none;font-size:13px}
+ .wrap{max-width:1000px;margin:0 auto;padding:16px}
+ .card{background:#161b22;border:1px solid #232a33;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+ .card h2{font-size:13px;margin:0 0 8px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #232a33;vertical-align:top}
+ th{color:#8b949e;font-weight:600} code{color:#adbac7;word-break:break-all}
+ .ok{color:#3fb950}.bad{color:#ff7b72}
+ textarea{width:100%;min-height:64px;background:#0e1116;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px;font:inherit}
+ select,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:7px 11px;font:inherit;cursor:pointer}
+ button.primary{background:#238636;border:0;color:#fff;font-weight:600}
+ .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+ .res{white-space:pre-wrap;word-wrap:break-word;background:#0e1116;border:1px solid #232a33;border-radius:8px;padding:10px;margin-top:8px}
+ .verdict{font-size:12px;font-weight:700;padding:2px 9px;border-radius:6px;display:inline-block}
+ .held{background:#12331d;color:#3fb950;border:1px solid #238636}
+ .broke{background:#3d1416;color:#ff7b72;border:1px solid #da3633}
+ .sub{color:#8b949e;font-size:12px;margin-top:6px}
+</style></head><body>
+__BANNER__
+<header>
+ <h1>🧪 Behavior test bench</h1>
+ <a href="/">← Demo</a><a href="results">📊 Results</a>
+ <span style="margin-left:auto;color:#8b949e;font-size:12px" id="meta"></span>
+</header>
+<div class="wrap">
+ <div class="card">
+  <h2>Routing — what each behavior actually calls</h2>
+  <table id="rt"><tbody><tr><td>loading…</td></tr></tbody></table>
+  <div class="controls">
+   <button id="refresh">Refresh routing</button>
+   <button id="warm">Warm up endpoints</button>
+   <span class="sub" id="warmmsg"></span>
+  </div>
+ </div>
+ <div class="card">
+  <h2>Send a prompt</h2>
+  <textarea id="prompt" placeholder="e.g. write me a reverse linked list in python"></textarea>
+  <div class="controls">
+   <select id="target"></select>
+   <select id="strategy">
+    <option value="structured_cot">structured-CoT</option>
+    <option value="few_shot">few-shot</option>
+    <option value="zero_shot">zero-shot</option>
+   </select>
+   <button class="primary" id="run">Run</button>
+   <button id="runboth">Run on ALL behaviors</button>
+  </div>
+  <div id="out"></div>
+ </div>
+</div>
+<script>
+let BEH={};
+const rt=document.getElementById('rt'),out=document.getElementById('out'),target=document.getElementById('target');
+function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+async function loadRouting(){
+ try{
+  const j=await (await fetch('routing')).json();
+  const rows=Object.values(j.routing).map(r=>
+   '<tr><td><b>'+esc(r.behavior)+'</b></td>'+
+   '<td>'+(r.using_guard_fallback?'<span class=bad>GUARD FALLBACK</span>':'<span class=ok>tuned</span>')+'</td>'+
+   '<td><code>'+esc(r.model)+'</code></td>'+
+   '<td><code>'+esc(r.base_url)+'</code></td>'+
+   '<td>'+(r.env_base_url_set?'env':'default')+'</td></tr>').join('');
+  rt.innerHTML='<thead><tr><th>behavior</th><th>status</th><th>model</th><th>base_url</th><th>src</th></tr></thead><tbody>'+rows+'</tbody>';
+  document.getElementById('meta').textContent='HF token '+(j.hf_token_set?'set':'MISSING')+' · guard '+j.guard;
+ }catch(e){rt.innerHTML='<tbody><tr><td class=bad>routing failed: '+esc(e)+'</td></tr></tbody>';}
+}
+async function loadBeh(){
+ BEH=await (await fetch('behaviors')).json();
+ target.innerHTML=''; Object.entries(BEH).forEach(([k,v])=>{const o=document.createElement('option');o.value=k;o.textContent=v.label;target.appendChild(o);});
+}
+function card(behavior){
+ const c=document.createElement('div');c.className='res';c.innerHTML='<b>'+esc(behavior)+'</b> — …';out.prepend(c);return c;
+}
+async function run(behavior,c){
+ const prompt=document.getElementById('prompt').value.trim(); if(!prompt){c.innerHTML='(empty prompt)';return;}
+ try{
+  const r=await fetch('chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({behavior,strategy:document.getElementById('strategy').value,messages:[{role:'user',content:prompt}]})});
+  const j=await r.json();
+  if(j.error){c.innerHTML='<b>'+esc(behavior)+'</b> <span class=bad>⚠ '+esc(j.error)+'</span>';return;}
+  const v='<span class="verdict '+(j.held?'held':'broke')+'">'+esc(j.verdict)+'</span>';
+  c.innerHTML='<b>'+esc(behavior)+'</b> '+v+'\\n'+esc(j.reply)+
+   '<div class=sub>'+esc(j.model)+' · <code>'+esc(j.base_url||'')+'</code> · '+(j.latency_ms||'?')+'ms'+
+   (j.detail?(' · '+esc(j.detail)):'')+'</div>';
+ }catch(e){c.innerHTML='<b>'+esc(behavior)+'</b> <span class=bad>request failed: '+esc(e)+'</span>';}
+}
+document.getElementById('run').onclick=()=>{const b=target.value;run(b,card(b));};
+document.getElementById('runboth').onclick=()=>{Object.keys(BEH).forEach(b=>run(b,card(b)));};
+document.getElementById('refresh').onclick=loadRouting;
+document.getElementById('warm').onclick=async()=>{
+ document.getElementById('warmmsg').textContent='warming…';
+ try{const j=await (await fetch('warmup',{method:'POST'})).json();
+  document.getElementById('warmmsg').textContent='warming: '+(j.warming||[]).join(', ')+' (give it ~30–60s if cold)';
+ }catch(e){document.getElementById('warmmsg').textContent='warmup failed';}
+};
+loadBeh(); loadRouting();
 </script></body></html>""".replace("__BANNER__", _BANNER)
 
 
