@@ -57,6 +57,9 @@ def lint_snippet(code: str) -> BranchResult:
 
 
 def lint_reply(text: str) -> BranchResult:
+    # Lint ONLY code inside ``` fences. A reply with no fenced code is pure prose (a refusal or a
+    # benign answer) — its ordinary English "if"/"for"/"while" ("...for you", "...while the...") must
+    # NOT count as branchy code. (The old `else text` fallback linted prose and wrongly dropped valid
+    # refusals from the dataset, skewing the Python/TypeScript balance.)
     blocks = _FENCE.findall(text or "")
-    code = "\n".join(blocks) if blocks else (text or "")
-    return lint_snippet(code)
+    return lint_snippet("\n".join(blocks))
