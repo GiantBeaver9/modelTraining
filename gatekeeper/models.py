@@ -56,8 +56,14 @@ def _resolve_key(model_cfg: dict) -> str:
     raise ConfigError(f"Environment variable {env_var!r} is not set.{hint}")
 
 
-def _retry(fn, *, attempts: int = 4, base_delay: float = 2.0):
-    """Call fn() with exponential backoff on transient errors."""
+def _retry(fn, *, attempts: int = 7, base_delay: float = 2.0, max_delay: float = 30.0):
+    """Call fn() with exponential backoff on transient errors.
+
+    Patient enough to ride out a dedicated HF Inference Endpoint's COLD START: an endpoint with
+    scale-to-zero returns 503 / "initializing" / "loading" for up to a few minutes on the first
+    request after idle. 7 attempts with capped backoff spans ~2+4+8+16+30+30 ≈ 90s of warm-up
+    before giving up, so the demo self-heals instead of surfacing "model call failed".
+    """
     last = None
     for i in range(attempts):
         try:
@@ -68,11 +74,14 @@ def _retry(fn, *, attempts: int = 4, base_delay: float = 2.0):
             transient = any(
                 s in msg
                 for s in ("rate", "timeout", "timed out", "overload", "503",
-                          "502", "500", "429", "connection", "unavailable")
+                          "502", "500", "429", "connection", "unavailable",
+                          # cold-start / endpoint-warming signals
+                          "initializ", "loading", "starting", "not ready", "scal",
+                          "temporarily", "bad gateway")
             )
             if not transient or i == attempts - 1:
                 raise
-            time.sleep(base_delay * (2 ** i))
+            time.sleep(min(base_delay * (2 ** i), max_delay))
     raise last  # pragma: no cover
 
 

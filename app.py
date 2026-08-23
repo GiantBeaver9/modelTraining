@@ -70,6 +70,64 @@ HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
 HF_TOKEN = os.environ.get("HF_TOKEN")   # API key for the HF endpoint
 _AGENT_ENV = {"gatekeeper": "SECRET_AGENT", "sovereign": "SOVEREIGN_AGENT"}
 
+# Sensible defaults so the deployed demo works even if Railway env is incomplete (all overridable).
+# The HF *router* (router.huggingface.co) CANNOT serve a custom fine-tune — it returns
+# 400 model_not_supported — so each tuned model needs its OWN dedicated HF Inference Endpoint URL.
+# Leaving *_BASE_URL unset used to silently fall back to the router and fail every call; that was
+# the "the app doesn't work" bug. These defaults point each behavior at its real endpoint.
+_DEFAULT_MODELS = {
+    "gatekeeper": "anash91/qwen-gatekeeper",
+    "sovereign": "anash91/qwen-sovereign",
+}
+_DEFAULT_ENDPOINT_URLS = {
+    # Confirmed running (vLLM, A10G). Override with SOVEREIGN_AGENT_BASE_URL if you recreate it.
+    "sovereign": "https://nvghh0cpaez7rhsx.eu-west-1.aws.endpoints.huggingface.cloud/v1",
+    # Gatekeeper: set SECRET_AGENT_BASE_URL to its dedicated endpoint's /v1, or rely on
+    # auto-discovery below (needs an HF_TOKEN with inference-endpoint read permission).
+}
+_discovered_urls: dict = {}
+
+
+def _discover_endpoint_url(model_id: str):
+    """Best-effort: find a RUNNING dedicated HF Inference Endpoint serving `model_id` and return its
+    /v1 URL. Self-heals if an endpoint is recreated with a new subdomain. Needs HF_TOKEN with
+    inference-endpoint read scope; silently returns None otherwise (we then fall back)."""
+    if not HF_TOKEN or "/" not in model_id:
+        return None
+    if model_id in _discovered_urls:
+        return _discovered_urls[model_id]
+    url = None
+    try:
+        import urllib.request
+        ns = model_id.split("/", 1)[0]
+        req = urllib.request.Request(
+            f"https://api.endpoints.huggingface.cloud/v2/endpoint/{ns}",
+            headers={"Authorization": f"Bearer {HF_TOKEN}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            items = json.loads(r.read().decode()).get("items", [])
+        for e in items:
+            m, st = e.get("model", {}), e.get("status", {})
+            if m.get("repository") == model_id and st.get("url") and st.get("state") == "running":
+                url = st["url"].rstrip("/") + "/v1"
+                break
+    except Exception as exc:  # noqa: BLE001
+        print(f"[routing] endpoint auto-discovery for {model_id} failed: {exc}", file=sys.stderr)
+    _discovered_urls[model_id] = url
+    return url
+
+
+def agent_base_url(behavior: str):
+    """Resolve the OpenAI-compatible base URL for a behavior's tuned model.
+    Priority: explicit {AGENT}_BASE_URL env  ->  known dedicated endpoint  ->  auto-discovery
+    ->  HF router (last resort; only works for router-supported models, NOT custom fine-tunes)."""
+    override = os.environ.get(_AGENT_ENV.get(behavior, "") + "_BASE_URL")
+    if override:
+        return override
+    if behavior in _DEFAULT_ENDPOINT_URLS:
+        return _DEFAULT_ENDPOINT_URLS[behavior]
+    discovered = _discover_endpoint_url(agent_model(behavior) or "")
+    return discovered or HF_BASE_URL
+
 SECRET = os.environ.get("SECRET_PASSPHRASE", "MIDNIGHT-SWORDFISH-7731")
 SECRET_CFG = {
     "passphrase": SECRET,
@@ -124,11 +182,16 @@ def guard_client():
 
 
 def agent_model(behavior: str):
-    """Resolve the tuned model id for a behavior from SECRET_AGENT / SOVEREIGN_AGENT (+ HF_PREFIX)."""
-    name = os.environ.get(_AGENT_ENV.get(behavior, ""))
+    """Resolve the tuned model id for a behavior from SECRET_AGENT / SOVEREIGN_AGENT (+ HF_PREFIX),
+    falling back to the known deployed model id so the demo never silently drops to the guard model."""
+    name = os.environ.get(_AGENT_ENV.get(behavior, "")) or _DEFAULT_MODELS.get(behavior)
     if not name:
         return None
-    return name if ("/" in name or ":" in name) else (f"{HF_PREFIX}/{name}" if HF_PREFIX else name)
+    if "/" in name or ":" in name:
+        return name
+    if HF_PREFIX:
+        return f"{HF_PREFIX}/{name}"
+    return _DEFAULT_MODELS.get(behavior, name)  # bare name, no prefix -> known full id
 
 
 def behavior_client(behavior: str):
@@ -139,13 +202,16 @@ def behavior_client(behavior: str):
         return _behavior_clients[behavior]
     model_id = agent_model(behavior)
     if model_id:
-        base = os.environ.get(_AGENT_ENV[behavior] + "_BASE_URL") or HF_BASE_URL
+        base = agent_base_url(behavior)
+        print(f"[routing] {behavior}: model={model_id} base_url={base}", file=sys.stderr)
         cfg = {"id": behavior, "provider": "openai_compatible", "model": model_id,
                "base_url": base, "api_key_env": "HF_TOKEN"}
         if HF_TOKEN:
             cfg["api_key"] = HF_TOKEN
         client = get_client(cfg)
     else:
+        print(f"[routing] {behavior}: no tuned model resolved -> falling back to guard model "
+              f"({GUARD_PROVIDER}:{GUARD_MODEL})", file=sys.stderr)
         client = guard_client()
     _behavior_clients[behavior] = client
     return client
@@ -299,7 +365,19 @@ def chat(body: ChatIn, _=Depends(require_auth)):
     try:
         reply = behavior_client(body.behavior).chat(convo, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse(status_code=502, content={"error": f"model call failed: {exc}"[:400]})
+        msg = str(exc)
+        hint = ""
+        if "model_not_supported" in msg or "not supported" in msg:
+            hint = (" — a custom fine-tune can't be served by the HF router; set "
+                    f"{_AGENT_ENV.get(body.behavior, 'AGENT')}_BASE_URL to your dedicated endpoint's /v1.")
+        elif "404" in msg or "does not exist" in msg or "not found" in msg.lower():
+            hint = (" — the endpoint is up but doesn't know this model name; the served model id must "
+                    f"equal {agent_model(body.behavior)!r}.")
+        elif "401" in msg or "403" in msg or "authenticat" in msg.lower():
+            hint = " — check HF_TOKEN has read access to the endpoint."
+        base = agent_base_url(body.behavior)
+        return JSONResponse(status_code=502,
+                            content={"error": f"model call failed (base_url={base}): {msg}{hint}"[:500]})
     scored = beh["score"](request, reply)
     return {"reply": reply, **scored, "behavior": body.behavior, "strategy": strategy,
             "model": agent_model(body.behavior) or f"{GUARD_PROVIDER}:{GUARD_MODEL}",
