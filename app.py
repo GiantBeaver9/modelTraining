@@ -118,16 +118,17 @@ def _discover_endpoint_url(model_id: str):
 
 
 def _normalize_base_url(url):
-    """Make a dedicated HF Inference Endpoint URL safe for the OpenAI SDK.
+    """Make a base URL safe for the OpenAI SDK (defuses the 'malformed URL' failure mode).
 
-    The SDK posts to `base_url + /chat/completions`, so a bare endpoint host (no /v1) 404s with
-    {'detail':'Not Found'}. Dedicated endpoints serve the OpenAI API under /v1 — so strip any
-    trailing slash and append /v1 if it's missing. Only touches *.endpoints.huggingface.cloud URLs;
-    the HF router and other providers (already carrying their own /v1, /api/v1, ...) are left alone.
+    The SDK posts to `base_url + /chat/completions`, so a malformed base — stray whitespace,
+    accidental '//' in the path, or a dedicated HF endpoint missing its /v1 — produces a bad request
+    URL (a 404 {'detail':'Not Found'}). We: trim, collapse '//' in the PATH (never the scheme's
+    '://'), drop trailing slashes, and append /v1 for *.endpoints.huggingface.cloud (which serve the
+    OpenAI API there). The HF router and other providers keep their own /v1, /api/v1, ... untouched.
     """
     if not url:
         return url
-    u = url.strip().rstrip("/")
+    u = re.sub(r"(?<!:)//+", "/", url.strip()).rstrip("/")
     if "endpoints.huggingface.cloud" in u and not u.endswith("/v1"):
         u += "/v1"
     return u
@@ -200,16 +201,22 @@ def guard_client():
 
 
 def agent_model(behavior: str):
-    """Resolve the tuned model id for a behavior from SECRET_AGENT / SOVEREIGN_AGENT (+ HF_PREFIX),
-    falling back to the known deployed model id so the demo never silently drops to the guard model."""
-    name = os.environ.get(_AGENT_ENV.get(behavior, "")) or _DEFAULT_MODELS.get(behavior)
+    """Resolve the tuned model id a behavior sends to its endpoint. The served model id must match
+    what the endpoint advertises (its /v1/models id — e.g. 'anash91/qwen-sovereign', NOT bare
+    'qwen-sovereign'), so this qualifies + sanitizes the name and falls back to the known deployed id
+    so the demo never sends a wrong/bare model or silently drops to the guard."""
+    name = (os.environ.get(_AGENT_ENV.get(behavior, "")) or _DEFAULT_MODELS.get(behavior) or "").strip()
     if not name:
         return None
-    if "/" in name or ":" in name:
+    if ":" in name:                      # explicit provider:model form — leave as given (trimmed)
         return name
-    if HF_PREFIX:
-        return f"{HF_PREFIX}/{name}"
-    return _DEFAULT_MODELS.get(behavior, name)  # bare name, no prefix -> known full id
+    if "/" not in name:                  # bare model name -> qualify it
+        if HF_PREFIX:
+            name = f"{HF_PREFIX.strip()}/{name}"
+        else:
+            return _DEFAULT_MODELS.get(behavior, name)   # bare name, no prefix -> known full id
+    # sanitize an owner/model id: kill whitespace, collapse doubled slashes, trim stray slashes
+    return re.sub(r"/+", "/", re.sub(r"\s+", "", name)).strip("/")
 
 
 def behavior_client(behavior: str):
