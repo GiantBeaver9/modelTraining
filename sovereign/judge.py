@@ -154,7 +154,10 @@ def judge(request: str, output: str, judge_client=None, judge_gen: dict | None =
         return det  # detector is authoritative on a positive hit
     if judge_client is None:
         return det
-    llm = llm_judge(request, output, judge_client, judge_gen or {})
+    try:
+        llm = llm_judge(request, output, judge_client, judge_gen or {})
+    except Exception:  # LLM judge down (bad key, quota, timeout) -> detector verdict stands
+        return det
     if llm.complied:
         return llm
     return Verdict(False, "none", "", "detector+llm")

@@ -199,7 +199,10 @@ def judge(output: str, secret_cfg: dict, judge_client=None, judge_gen: dict | No
         return det  # detector is authoritative on a positive hit
     if judge_client is None:
         return det
-    llm = llm_judge(output, secret_cfg, judge_client, judge_gen or {})
+    try:
+        llm = llm_judge(output, secret_cfg, judge_client, judge_gen or {})
+    except Exception:  # LLM judge down (bad key, quota, timeout) -> detector verdict stands
+        return det
     if llm.leaked:
         llm.source = "llm"
         return llm

@@ -468,7 +468,15 @@ def chat(body: ChatIn, _=Depends(require_auth)):
             hint = " — check HF_TOKEN has read access to the endpoint."
         return JSONResponse(status_code=502,
                             content={"error": f"model call failed (base_url={base}): {msg}{hint}"[:500]})
-    scored = beh["score"](request, reply)
+    # Scoring must never sink the whole request: the model already replied. If the LLM judge is
+    # unavailable (e.g. GEMINI_API_KEY invalid) the judges fall back to their rule-based detector;
+    # this catches anything else so /chat always returns the model's reply as JSON, never a 500.
+    try:
+        scored = beh["score"](request, reply)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[score] {body.behavior} scoring failed: {exc}"[:200], file=sys.stderr)
+        scored = {"held": None, "verdict": "· judge unavailable ·",
+                  "detail": f"scoring error: {str(exc)[:160]}", "judge_source": "error"}
     return {"reply": reply, **scored, "behavior": body.behavior, "strategy": strategy,
             "model": agent_model(body.behavior) or f"{GUARD_PROVIDER}:{GUARD_MODEL}",
             "base_url": agent_base_url(body.behavior),
@@ -530,6 +538,7 @@ HTML_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
  .verdict{margin-top:8px;font-size:12px;font-weight:700;display:inline-block;padding:2px 9px;border-radius:6px}
  .held{background:#12331d;color:#3fb950;border:1px solid #238636}
  .broke{background:#3d1416;color:#ff7b72;border:1px solid #da3633}
+ .neutral{background:#21262d;color:#8b949e;border:1px solid #30363d}
  .why{color:#8b949e;font-size:12px;margin-top:5px}
  form{position:fixed;bottom:0;left:0;right:0;background:#0e1116;border-top:1px solid #232a33;padding:12px 16px}
  .bar{max-width:900px;margin:0 auto;display:flex;gap:8px}
@@ -599,7 +608,7 @@ document.getElementById('f').onsubmit=async(e)=>{
   const j=await r.json();
   if(j.error){pending.textContent='⚠ '+j.error;send.disabled=false;return;}
   pending.textContent=j.reply; messages.push({role:'assistant',content:j.reply});
-  const v=document.createElement('div'); v.className='verdict '+(j.held?'held':'broke'); v.textContent=j.verdict;
+  const v=document.createElement('div'); v.className='verdict '+(j.held===null?'neutral':(j.held?'held':'broke')); v.textContent=j.verdict;
   pending.appendChild(document.createElement('br')); pending.appendChild(v);
   if(!j.held&&j.detail){const w=document.createElement('div');w.className='why';w.textContent=j.detail+' · via '+j.judge_source;pending.appendChild(w);}
   document.getElementById('turns').textContent='turns: '+j.turn+' · '+j.model+' · '+j.strategy+(j.latency_ms?(' · '+j.latency_ms+'ms'):'');
@@ -639,6 +648,7 @@ TEST_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"/>
  .verdict{font-size:12px;font-weight:700;padding:2px 9px;border-radius:6px;display:inline-block}
  .held{background:#12331d;color:#3fb950;border:1px solid #238636}
  .broke{background:#3d1416;color:#ff7b72;border:1px solid #da3633}
+ .neutral{background:#21262d;color:#8b949e;border:1px solid #30363d}
  .sub{color:#8b949e;font-size:12px;margin-top:6px}
 </style></head><body>
 __BANNER__
@@ -708,7 +718,7 @@ async function run(behavior,c){
     ' — non-JSON reply (usually a cold-start/proxy timeout; click “Warm up endpoints”, wait ~45s, retry).</span>'+
     '<div class=sub>first bytes: '+esc(txt.slice(0,140))+'</div>'; return; }
   if(j.error){c.innerHTML='<b>'+esc(behavior)+'</b> <span class=bad>⚠ '+esc(j.error)+'</span>';return;}
-  const v='<span class="verdict '+(j.held?'held':'broke')+'">'+esc(j.verdict)+'</span>';
+  const v='<span class="verdict '+(j.held===null?'neutral':(j.held?'held':'broke'))+'">'+esc(j.verdict)+'</span>';
   c.innerHTML='<b>'+esc(behavior)+'</b> '+v+'\\n'+esc(j.reply)+
    '<div class=sub>'+esc(j.model)+' · <code>'+esc(j.base_url||'')+'</code> · '+(j.latency_ms||'?')+'ms'+
    (j.detail?(' · '+esc(j.detail)):'')+'</div>';
