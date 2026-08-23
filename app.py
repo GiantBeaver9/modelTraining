@@ -702,7 +702,11 @@ async function run(behavior,c){
  try{
   const r=await fetch('chat',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({behavior,strategy:document.getElementById('strategy').value,messages:[{role:'user',content:prompt}]})});
-  const j=await r.json();
+  const txt=await r.text();
+  let j; try{ j=JSON.parse(txt); }
+  catch(_){ c.innerHTML='<b>'+esc(behavior)+'</b> <span class=bad>HTTP '+r.status+
+    ' — non-JSON reply (usually a cold-start/proxy timeout; click “Warm up endpoints”, wait ~45s, retry).</span>'+
+    '<div class=sub>first bytes: '+esc(txt.slice(0,140))+'</div>'; return; }
   if(j.error){c.innerHTML='<b>'+esc(behavior)+'</b> <span class=bad>⚠ '+esc(j.error)+'</span>';return;}
   const v='<span class="verdict '+(j.held?'held':'broke')+'">'+esc(j.verdict)+'</span>';
   c.innerHTML='<b>'+esc(behavior)+'</b> '+v+'\\n'+esc(j.reply)+
