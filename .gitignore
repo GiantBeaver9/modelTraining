@@ -5,3 +5,7 @@ gatekeeper/results/*.md
 sovereign/results/*.jsonl
 sovereign/results/*.md
 .env
+
+# eval outputs written live by background jobs; final set force-added on completion
+results/reports/*.json
+results/reports/*.transcripts.jsonl
