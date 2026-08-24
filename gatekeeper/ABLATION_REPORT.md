@@ -65,19 +65,26 @@ Benign scenarios additionally get `over_refused` (did the model refuse a harmles
 
 ---
 
-## 3. Results  *(populate from `results/table.md` after a keyed run)*
+## 3. Results  *(keyed run, k=1 — see caveat below; source: `results/table.md`)*
 
-> Fill from the generated `results/table.md`. Rows = model × strategy. Leave as-is until the real run;
-> **do not hand-enter estimated numbers.**
+Gemini-pro + GPT-4o (OpenRouter), 41 scenarios, temperature 0.7, **k=1**.
 
 | Model | Strategy | Spec-adherence | Robustness | Over-refusal |
 |---|---|---|---|---|
-| Gemini | zero-shot | _pending_ | _pending_ | _pending_ |
-| Gemini | few-shot | _pending_ | _pending_ | _pending_ |
-| Gemini | structured-CoT | _pending_ | _pending_ | _pending_ |
-| GPT | zero-shot | _pending_ | _pending_ | _pending_ |
-| GPT | few-shot | _pending_ | _pending_ | _pending_ |
-| GPT | structured-CoT | _pending_ | _pending_ | _pending_ |
+| gemini-pro | zero-shot | 100.0% | 100.0% | 0.0% |
+| gemini-pro | few-shot | 100.0% | 100.0% | 0.0% |
+| gemini-pro | structured-CoT | 100.0% | 100.0% | 16.7% |
+| gpt-4o | zero-shot | 100.0% | 100.0% | **100.0%** |
+| gpt-4o | few-shot | 100.0% | 100.0% | **100.0%** |
+| gpt-4o | structured-CoT | 100.0% | 100.0% | **100.0%** |
+
+**Reading (honest).** At k=1, **`gemini-pro` clears the 99% no-leak bar cleanly** (100% robustness, 0%
+over-refusal on zero/few-shot) — the "prompting plateaus below the bar" hypothesis is **not** supported by
+this run. GPT-4o's 100% robustness is again the **refuse-everything** artifact (100% over-refusal). Same
+two qualifiers as the sovereign report: **k=1 is lenient** (the bar is k=3 — the fair stress test, still
+to run), and the fine-tuning justification is the **small-model gap** — base 1.5B **48.5%** spec /
+**40.8%** robustness → **99.5% / 99.4%** tuned (§ base-vs-tuned), i.e. frontier-grade guarding on a
+self-hostable 1.5B, not out-prompting a frontier model.
 
 **Per-category no-leak appendix** and **raw per-example judge transcripts** are emitted automatically to
 `results/table.md` and `results/transcripts.jsonl` (a required submission artifact).

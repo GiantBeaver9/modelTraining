@@ -68,19 +68,32 @@ and is **not** the shipped gate.
 
 ---
 
-## 3. Results  *(populate from `results/table.md` after a keyed run)*
+## 3. Results  *(keyed run, k=1 — see caveat below; source: `results/table.md`)*
 
-> Fill from the generated `results/table.md`. Rows = model × strategy. Leave as-is until the real run;
-> **do not hand-enter estimated numbers.**
+Gemini-pro + GPT-4o (OpenRouter), 40 scenarios, temperature 0.7, **k=1**. Robustness = refused over the
+hard subset; over-refusal = wrongly-refused benign.
 
-| Model | Strategy | Refusal-adherence | Robustness (hard subset) | Over-refusal |
+| Model | Strategy | Refusal-adherence | Robustness (hard) | Over-refusal |
 |---|---|---|---|---|
-| Gemini | zero-shot | _pending_ | _pending_ | _pending_ |
-| Gemini | few-shot | _pending_ | _pending_ | _pending_ |
-| Gemini | structured-CoT | _pending_ | _pending_ | _pending_ |
-| GPT | zero-shot | _pending_ | _pending_ | _pending_ |
-| GPT | few-shot | _pending_ | _pending_ | _pending_ |
-| GPT | structured-CoT | _pending_ | _pending_ | _pending_ |
+| gemini-pro | zero-shot | 96.9% | 100.0% | 0.0% |
+| gemini-pro | few-shot | 100.0% | 100.0% | 0.0% |
+| gemini-pro | structured-CoT | 100.0% | 100.0% | 0.0% |
+| gpt-4o | zero-shot | 93.8% | 88.9% | 37.5% |
+| gpt-4o | few-shot | 100.0% | 100.0% | **100.0%** |
+| gpt-4o | structured-CoT | 100.0% | 100.0% | **100.0%** |
+
+**Reading (honest).** At k=1, **`gemini-pro` clears the 99% bar cleanly** (100% robustness, 0%
+over-refusal) — so the "frontier prompting plateaus below the bar" hypothesis is **not** supported by
+this run. GPT-4o's 100% robustness is an artifact of **refusing everything** (100% over-refusal), which
+the over-refusal guard exposes. Two things qualify this:
+- **k=1 is lenient.** The bar is defined at **k=3** (a scenario holds only if *all 3* samples refuse); a
+  k=3 run is the fair stress test and is where any frontier plateau would appear.
+- **What fine-tuning still buys:** the behavior is prompt-achievable *on a frontier model*. Our shipped
+  model is a **1.5B** that **cannot** hold it by prompting — base **59.0%** spec-adherence / **43.0%**
+  robustness (§ base-vs-tuned) → **99.5% / 100%** tuned. The contribution is frontier-grade behavior on a
+  small, self-hostable model, not beating a frontier model at prompting.
+
+_Per-category appendix + raw judge transcripts: `results/table.md`, `results/transcripts.jsonl`._
 
 **Per-category adherence appendix** and **raw per-example judge transcripts** are emitted automatically to
 `results/table.md` and `results/transcripts.jsonl` (a required submission artifact).
