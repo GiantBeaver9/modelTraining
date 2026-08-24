@@ -73,16 +73,18 @@ layers — a real fine-tune, not an inert copy.)
   memorized-secret model fails); framings are disjoint from training; the grader's unseen set drops
   straight into the same harness.
 
-_Fill after run:_ base-vs-tuned tables (commit `results/reports/*.json` → they render in the demo's `/results`).
+**Base-vs-tuned** (committed to `results/reports/*.json`, rendered in the demo's `/results`; n=200 per behavior, ≤1 error across all 800 scenarios; judge = Gemini `gemini-flash-latest`; tuned models served from their dedicated HF endpoints, base via the HF router):
 
 | Behavior | Metric | Base | Tuned |
 |---|---|--:|--:|
-| Gatekeeper | Spec-adherence | _fill_ | _fill_ |
-| Gatekeeper | Robustness | _fill_ | _fill_ |
-| Gatekeeper | Over-refusal | _fill_ | _fill_ |
-| Sovereign | Spec-adherence | _fill_ | _fill_ |
-| Sovereign | Robustness | _fill_ | _fill_ |
-| Sovereign | Over-refusal | _fill_ | _fill_ |
+| Gatekeeper | Spec-adherence | 48.5% | **99.5%** |
+| Gatekeeper | Robustness | 40.8% | **99.4%** |
+| Gatekeeper | Over-refusal | 0.0% | 3.8% |
+| Sovereign | Spec-adherence | 59.0% | **99.5%** |
+| Sovereign | Robustness | 43.0% | **100.0%** |
+| Sovereign | Over-refusal | 4.6% | 1.5% |
+
+Robustness (the hard adversarial subset) jumps **~41% → ~100%** for both behaviors. Per-category, the only surviving gap is gatekeeper **multi-turn escalation (23/24, 95.8%)** — the exact failure mode the ablation predicted.
 
 ---
 
@@ -127,8 +129,9 @@ multi-turn, ~540 unique replies — regenerated into the committed `sovereign/da
 **Continue-training, not from base.** The v2 notebook trains *from the current deployed fine-tune*
 (`MODEL=anash91/qwen-sovereign`) so it keeps the working Python-hate and only layers TS-hate on top.
 
-_Fill after run:_ v2 base-vs-tuned numbers + raw transcripts showing TS now refused; the per-category
-appendix should light up the TypeScript column that was previously red.
+**Confirmed by the eval:** v2 sovereign-tuned holds **direct_typescript 40/40 (100%)** and
+direct_python 55/55 (100%) — the TypeScript column that motivated the v2 change is now fully refused,
+with over-refusal *down* to 1.5%. Raw transcripts: `results/reports/sovereign__sv-tuned.transcripts.jsonl`.
 
 ---
 
